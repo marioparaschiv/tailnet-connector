@@ -57,6 +57,12 @@ pub enum ConfigError {
         reason: &'static str,
     },
     NoHomeDir(&'static str),
+    /// The command that gives a variable its default failed.
+    Default {
+        name: &'static str,
+        command: &'static str,
+        reason: String,
+    },
     Read {
         path: PathBuf,
         source: std::io::Error,
@@ -80,6 +86,11 @@ impl fmt::Display for ConfigError {
             Self::NoHomeDir(name) => {
                 write!(f, "{name} is not set and the home directory is unknown")
             }
+            Self::Default {
+                name,
+                command,
+                reason,
+            } => write!(f, "{name} is not set and `{command}` failed: {reason}"),
             Self::Read { path, source } => {
                 write!(f, "cannot read {}: {source}", path.display())
             }
@@ -108,11 +119,7 @@ impl Config {
     pub fn from_lookup(
         lookup: impl Fn(&str) -> Result<String, VarError>,
     ) -> Result<Self, ConfigError> {
-        let var = |name: &'static str| match lookup(name) {
-            Ok(value) => Ok(Some(value)),
-            Err(VarError::NotPresent) => Ok(None),
-            Err(VarError::NotUnicode(_)) => Err(ConfigError::NotUnicode(name)),
-        };
+        let var = |name| var(&lookup, name);
 
         let url = var("TAILNET_URL")?.ok_or(ConfigError::Missing("TAILNET_URL"))?;
         let (connect_url, mcp_url, hub_host) = Self::hub_urls(&url)?;
@@ -227,6 +234,18 @@ impl Config {
         let home = env::home_dir().ok_or(ConfigError::NoHomeDir(name))?;
 
         Ok(default.iter().fold(home, |path, part| path.join(part)))
+    }
+}
+
+/// A variable from `lookup`, `None` if it is not set.
+pub(crate) fn var(
+    lookup: impl Fn(&str) -> Result<String, VarError>,
+    name: &'static str,
+) -> Result<Option<String>, ConfigError> {
+    match lookup(name) {
+        Ok(value) => Ok(Some(value)),
+        Err(VarError::NotPresent) => Ok(None),
+        Err(VarError::NotUnicode(_)) => Err(ConfigError::NotUnicode(name)),
     }
 }
 
