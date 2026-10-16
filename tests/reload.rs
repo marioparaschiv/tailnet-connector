@@ -4,7 +4,7 @@ use std::path::Path;
 use std::time::{Duration, SystemTime};
 
 use common::*;
-use serde_json::{Value, json};
+use serde_json::json;
 use tailnet_connector::reload;
 use tokio::net::TcpListener;
 
@@ -17,10 +17,6 @@ fn rewrite(path: &Path, contents: &str, generation: u64) {
         .unwrap()
         .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(generation))
         .unwrap();
-}
-
-fn claude_json(mcp_servers: Value, num_startups: u64) -> String {
-    json!({ "numStartups": num_startups, "mcpServers": mcp_servers }).to_string()
 }
 
 async fn past_next_poll() {

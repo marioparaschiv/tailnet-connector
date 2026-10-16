@@ -39,10 +39,15 @@ pub fn echo_entry() -> Value {
     json!({ "type": "stdio", "command": echo_server_path() })
 }
 
+/// Claude config contents; `numStartups` stands in for the unrelated state Claude Code rewrites.
+pub fn claude_json(mcp_servers: Value, num_startups: u64) -> String {
+    json!({ "numStartups": num_startups, "mcpServers": mcp_servers }).to_string()
+}
+
 /// A Claude config at a fresh temp path holding the given `mcpServers`.
 pub fn claude_config(name: &str, mcp_servers: Value) -> PathBuf {
     let path = temp_path(name);
-    write_json(&path, &json!({ "mcpServers": mcp_servers }));
+    std::fs::write(&path, claude_json(mcp_servers, 0)).unwrap();
 
     path
 }
