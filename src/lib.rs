@@ -9,3 +9,4 @@ pub mod known_servers;
 pub mod log_file;
 pub mod reload;
 pub mod services;
+pub mod tailscale;
