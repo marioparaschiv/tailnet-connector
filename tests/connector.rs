@@ -1,7 +1,7 @@
 mod common;
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::ffi::OsStr;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
@@ -283,7 +283,7 @@ async fn skips_unsupported_entries_and_the_hub_itself() {
     );
 }
 
-fn run_binary(envs: &[(&str, &Path)]) -> String {
+fn run_binary(envs: &[(&str, &OsStr)]) -> String {
     let mut command = Command::new(env!("CARGO_BIN_EXE_tailnet-connector"));
 
     for name in [
@@ -311,8 +311,8 @@ fn fails_at_startup_without_tailnet_url() {
 #[test]
 fn fails_at_startup_on_invalid_number() {
     let stderr = run_binary(&[
-        ("TAILNET_URL", Path::new("http://127.0.0.1:9")),
-        ("TAILNET_IDLE_SECONDS", Path::new("-1")),
+        ("TAILNET_URL", OsStr::new("http://127.0.0.1:9")),
+        ("TAILNET_IDLE_SECONDS", OsStr::new("-1")),
     ]);
 
     assert_eq!(
@@ -327,8 +327,8 @@ fn fails_at_startup_on_malformed_claude_config() {
     std::fs::write(&path, "{ \"mcpServers\": ").unwrap();
 
     let stderr = run_binary(&[
-        ("TAILNET_URL", Path::new("http://127.0.0.1:9")),
-        ("CLAUDE_CONFIG", &path),
+        ("TAILNET_URL", OsStr::new("http://127.0.0.1:9")),
+        ("CLAUDE_CONFIG", path.as_os_str()),
     ]);
 
     assert!(
@@ -344,9 +344,9 @@ fn fails_at_startup_on_malformed_checks_file() {
     std::fs::write(&checks, r#"{ "vphone": { "tcp": "no-port" } }"#).unwrap();
 
     let stderr = run_binary(&[
-        ("TAILNET_URL", Path::new("http://127.0.0.1:9")),
-        ("CLAUDE_CONFIG", &claude_config),
-        ("TAILNET_CHECKS", &checks),
+        ("TAILNET_URL", OsStr::new("http://127.0.0.1:9")),
+        ("CLAUDE_CONFIG", claude_config.as_os_str()),
+        ("TAILNET_CHECKS", checks.as_os_str()),
     ]);
 
     assert!(

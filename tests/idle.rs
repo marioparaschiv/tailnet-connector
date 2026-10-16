@@ -11,17 +11,18 @@ use tokio::net::TcpListener;
 
 const IDLE: Duration = Duration::from_secs(300);
 
-async fn start_server(name: &str, entry: Value) -> Arc<Server> {
+async fn start_server(entry: Value) -> Arc<Server> {
     let hub = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let idle = IDLE.as_secs().to_string();
     let config = config(
         &hub,
         &temp_path("unused.json"),
-        &[("TAILNET_IDLE_SECONDS", "300")],
+        &[("TAILNET_IDLE_SECONDS", &idle)],
     );
-    let mcp_servers = json!({ name: entry }).as_object().unwrap().clone();
+    let mcp_servers = json!({ "echo": entry }).as_object().unwrap().clone();
     let services = Services::start(&mcp_servers, &config).await;
 
-    Arc::clone(services.get(name).unwrap())
+    Arc::clone(services.get("echo").unwrap())
 }
 
 fn arguments(text: &str) -> Option<JsonObject> {
@@ -45,7 +46,7 @@ async fn exited(pid: u32) {
 
 #[tokio::test(start_paused = true)]
 async fn stops_after_sitting_idle_and_starts_again() {
-    let server = start_server("echo", echo_entry()).await;
+    let server = start_server(echo_entry()).await;
 
     let first = echo(&server).await.unwrap();
     tokio::time::sleep(IDLE - Duration::from_secs(1)).await;
@@ -60,7 +61,7 @@ async fn stops_after_sitting_idle_and_starts_again() {
 
 #[tokio::test(start_paused = true)]
 async fn concurrent_calls_share_one_start() {
-    let server = start_server("echo", echo_entry()).await;
+    let server = start_server(echo_entry()).await;
 
     let (a, b) = tokio::join!(echo(&server), echo(&server));
 
@@ -69,7 +70,7 @@ async fn concurrent_calls_share_one_start() {
 
 #[tokio::test(start_paused = true)]
 async fn keeps_running_while_a_call_is_in_flight() {
-    let server = start_server("echo", echo_entry()).await;
+    let server = start_server(echo_entry()).await;
     let first = echo(&server).await.unwrap();
 
     let hang = server.call_tool("hang".to_owned(), None);
@@ -88,7 +89,7 @@ async fn keeps_running_while_a_call_is_in_flight() {
 async fn retries_a_failed_start_on_the_next_call() {
     let command = temp_path("retried-echo-server");
     std::fs::copy(echo_server_path(), &command).unwrap();
-    let server = start_server("echo", json!({ "type": "stdio", "command": command })).await;
+    let server = start_server(json!({ "type": "stdio", "command": command })).await;
 
     let moved = temp_path("retried-echo-server.moved");
     std::fs::rename(&command, &moved).unwrap();

@@ -5,7 +5,6 @@ use std::time::Duration;
 use common::*;
 use serde_json::json;
 use tailnet_connector::checks;
-use tailnet_connector::connector::Connector;
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 
@@ -60,28 +59,6 @@ async fn services_behind_a_failing_check_drop_out_until_reachable() {
     // Dropping out stopped the server, so this call starts a new one.
     let reply = call(&mut socket, 3, "echo", "echo", json!({ "text": "back" })).await;
     assert_ne!(echo_pid(result_text(&reply)), first);
-}
-
-#[tokio::test]
-async fn a_malformed_checks_file_fails_startup() {
-    let checks = temp_path("bad-checks.json");
-    write_json(&checks, &json!({ "vphone": { "tcp": "no-port" } }));
-    let hub = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let claude_config = claude_config("bad-checks-claude.json", json!({}));
-    let checks = checks.display().to_string();
-
-    let Err(error) =
-        Connector::start(config(&hub, &claude_config, &[("TAILNET_CHECKS", &checks)])).await
-    else {
-        panic!("started with a malformed checks file");
-    };
-
-    let message = error.to_string();
-    assert!(
-        message.starts_with(&format!("cannot parse {checks}: "))
-            && message.contains("expected host:port"),
-        "{message}"
-    );
 }
 
 #[test]
