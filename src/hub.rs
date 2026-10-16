@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Duration;
@@ -12,11 +13,42 @@ use tokio_tungstenite::tungstenite::{Error as WsError, Message};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 
 use crate::config::Config;
-use crate::connector::Registration;
-use crate::services::Server;
+use crate::services::{Server, Services};
 
 const FIRST_RETRY: Duration = Duration::from_secs(1);
 const MAX_RETRY: Duration = Duration::from_secs(60);
+
+/// What the hub should see: the listed services and which of them are available right now.
+pub struct Registration {
+    pub(crate) services: Arc<Services>,
+    pub(crate) available: BTreeSet<String>,
+}
+
+impl Registration {
+    /// The server behind `name`, if it is listed and available.
+    pub fn server(&self, name: &str) -> Option<&Arc<Server>> {
+        self.services
+            .get(name)
+            .filter(|_| self.available.contains(name))
+    }
+
+    pub fn available(&self) -> impl Iterator<Item = (&str, &Server)> {
+        self.available
+            .iter()
+            .filter_map(|name| Some((name.as_str(), self.services.get(name)?.as_ref())))
+    }
+
+    /// The available names joined for logs, or `when_empty` if there are none.
+    pub fn names(&self, when_empty: &str) -> String {
+        let names: Vec<&str> = self.available().map(|(name, _)| name).collect();
+
+        if names.is_empty() {
+            return when_empty.to_owned();
+        }
+
+        names.join(", ")
+    }
+}
 
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
@@ -82,14 +114,11 @@ async fn serve(
     let (mut sink, mut stream) = socket.split();
     let (register, names) = {
         let registration = registration.borrow_and_update();
-        let names: Vec<&str> = registration.available().map(|(name, _)| name).collect();
-        let names = if names.is_empty() {
-            "no services available".to_owned()
-        } else {
-            names.join(", ")
-        };
 
-        (register_message(&config.machine, &registration), names)
+        (
+            register_message(&config.machine, &registration),
+            registration.names("no services available"),
+        )
     };
     sink.send(register).await?;
     println!("connected to {} as {}: {names}", config.url, config.machine);
