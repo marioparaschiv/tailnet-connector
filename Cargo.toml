@@ -19,4 +19,4 @@ rmcp = { version = "3.5.1", default-features = false, features = ["which-command
 [dev-dependencies]
 axum = { version = "0.8.9", default-features = false, features = ["tokio", "http1"] }
 rmcp = { version = "3.5.1", features = ["server", "macros", "transport-io", "schemars", "transport-streamable-http-server"] }
-tokio = { version = "1.53.3", features = ["net", "test-util"] }
+tokio = { version = "1.53.3", features = ["test-util"] }
