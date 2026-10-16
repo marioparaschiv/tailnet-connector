@@ -3,12 +3,14 @@
 
 use std::process::ExitCode;
 
+use futures_util::FutureExt;
 use tailnet_connector::agent;
 use tailnet_connector::config::Config;
 use tailnet_connector::connector::Connector;
 use tailnet_connector::hub_server::config::HubConfig;
 use tailnet_connector::hub_server::hosts::Hosts;
 use tailnet_connector::hub_server::{self, HubState};
+use tailnet_connector::tailscale::Status;
 use tokio::net::TcpListener;
 
 enum Mode {
@@ -115,6 +117,7 @@ async fn run_hub() -> ExitCode {
     let state = HubState {
         hosts: Hosts::default(),
         notify: config.notify,
+        read_status: || Status::read().boxed(),
     };
 
     match hub_server::serve(listener, state).await {

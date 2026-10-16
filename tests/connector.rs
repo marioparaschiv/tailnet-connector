@@ -3,23 +3,14 @@ mod common;
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::process::{Command, Stdio};
-use std::sync::Arc;
 use std::time::Duration;
 
 use common::*;
-use rmcp::handler::server::tool::Extension;
-use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{ServerCapabilities, ServerConfig};
-use rmcp::transport::streamable_http_server::{
-    StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
-};
-use rmcp::{ServerHandler, tool, tool_handler, tool_router};
 use serde_json::json;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::net::TcpListener;
 use tokio::time::Instant;
 use tokio_tungstenite::accept_async;
-use tokio_tungstenite::tungstenite::http::request::Parts;
 
 #[tokio::test]
 async fn registers_fixture_tools_and_proxies_calls() {
@@ -118,53 +109,6 @@ async fn reconnects_with_backoff_and_registers_again() {
 
     let mut socket = accept_async(wait_for_attempt(1).await).await.unwrap();
     assert_eq!(receive(&mut socket).await["machine"], MACHINE);
-}
-
-#[derive(Clone)]
-struct HeaderServer;
-
-#[derive(serde::Deserialize, rmcp::schemars::JsonSchema)]
-#[schemars(crate = "rmcp::schemars")]
-struct HeaderRequest {
-    name: String,
-}
-
-#[tool_router]
-impl HeaderServer {
-    #[tool(description = "Return a request header, empty when missing")]
-    fn header(
-        &self,
-        Extension(parts): Extension<Parts>,
-        Parameters(HeaderRequest { name }): Parameters<HeaderRequest>,
-    ) -> String {
-        parts
-            .headers
-            .get(name)
-            .and_then(|value| value.to_str().ok())
-            .unwrap_or_default()
-            .to_owned()
-    }
-}
-
-#[tool_handler]
-impl ServerHandler for HeaderServer {
-    fn get_info(&self) -> ServerConfig {
-        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
-    }
-}
-
-async fn serve_http_mcp() -> String {
-    let service = StreamableHttpService::new(
-        || Ok(HeaderServer),
-        Arc::new(LocalSessionManager::default()),
-        StreamableHttpServerConfig::default(),
-    );
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let url = format!("http://{}/mcp", listener.local_addr().unwrap());
-    let router = axum::Router::new().nest_service("/mcp", service);
-    tokio::spawn(async move { axum::serve(listener, router).await });
-
-    url
 }
 
 #[tokio::test]
