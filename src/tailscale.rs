@@ -10,7 +10,7 @@ use tokio::process::Command;
 const NEVER_SEEN: &str = "0001-01-01T00:00:00Z";
 
 /// The parts of `tailscale status --json` the hub uses.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct Status {
     #[serde(rename = "Self")]
     pub self_node: Node,
@@ -18,7 +18,7 @@ pub struct Status {
     pub peers: Option<BTreeMap<String, Node>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct Node {
     pub host_name: String,
@@ -71,6 +71,24 @@ impl std::error::Error for StatusError {
             Self::Spawn(error) => Some(error),
             Self::Parse(error) => Some(error),
             Self::Exit { .. } => None,
+        }
+    }
+}
+
+/// Where the hub reads Tailscale status from.
+#[derive(Debug, Clone)]
+pub enum StatusSource {
+    /// `tailscale status --json`, read anew each time.
+    Tailscale,
+    /// The same status every time, for tests.
+    Fixed(Status),
+}
+
+impl StatusSource {
+    pub async fn read(&self) -> Result<Status, StatusError> {
+        match self {
+            Self::Tailscale => Status::read().await,
+            Self::Fixed(status) => Ok(status.clone()),
         }
     }
 }
