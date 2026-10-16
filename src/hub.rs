@@ -4,8 +4,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use rmcp::model::{CallToolResult, JsonObject, Tool};
-use serde::{Deserialize, Serialize};
 use tokio::net::TcpStream;
 use tokio::sync::watch;
 use tokio::task::JoinSet;
@@ -13,7 +11,10 @@ use tokio_tungstenite::tungstenite::{Error as WsError, Message};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 
 use crate::config::Config;
+use crate::hub::protocol::{ConnectorMessage, HubMessage, RegisteredService};
 use crate::services::{Server, Services};
+
+pub mod protocol;
 
 const FIRST_RETRY: Duration = Duration::from_secs(1);
 const MAX_RETRY: Duration = Duration::from_secs(60);
@@ -48,42 +49,6 @@ impl Registration {
 
         names.join(", ")
     }
-}
-
-#[derive(Serialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
-enum ConnectorMessage<'a> {
-    Register {
-        machine: &'a str,
-        services: Vec<RegisteredService<'a>>,
-    },
-    Result {
-        id: u64,
-        result: CallToolResult,
-    },
-    Error {
-        id: u64,
-        message: String,
-    },
-}
-
-#[derive(Serialize)]
-struct RegisteredService<'a> {
-    name: &'a str,
-    tools: &'a [Tool],
-    #[serde(skip_serializing_if = "Option::is_none")]
-    url: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
-enum HubMessage {
-    Call {
-        id: u64,
-        service: String,
-        tool: String,
-        arguments: Option<JsonObject>,
-    },
 }
 
 /// Keeps a registered connection to the hub open forever, reconnecting with exponential backoff.
@@ -161,12 +126,12 @@ async fn serve(
 
 fn register_message(machine: &str, registration: &Registration) -> Message {
     encode(&ConnectorMessage::Register {
-        machine,
+        machine: machine.to_owned(),
         services: registration
             .available()
             .map(|(name, server)| RegisteredService {
-                name,
-                tools: server.tools(),
+                name: name.to_owned(),
+                tools: server.tools().to_vec(),
                 url: server.url(),
             })
             .collect(),
