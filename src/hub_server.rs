@@ -6,10 +6,11 @@ use std::time::Duration;
 
 use axum::routing::{any, any_service};
 use axum::{Router, middleware};
+use futures_util::future::BoxFuture;
 use tokio::net::TcpListener;
 
 use crate::hub_server::hosts::Hosts;
-use crate::tailscale::StatusSource;
+use crate::tailscale::{Status, StatusError};
 
 mod catalog;
 pub mod config;
@@ -23,8 +24,8 @@ pub struct HubState {
     pub hosts: Hosts,
     /// How often each agent session is told if its tools changed.
     pub notify: Duration,
-    /// Where Tailscale status is read from.
-    pub status: StatusSource,
+    /// Names connectors and lists machines; `Status::read` outside tests.
+    pub read_status: fn() -> BoxFuture<'static, Result<Status, StatusError>>,
 }
 
 /// `/connect` and `/mcp`; any other path is a 404.

@@ -136,10 +136,7 @@ impl Session {
     }
 
     async fn list_machines(&self) -> Result<CallToolResult, ErrorData> {
-        let status = self
-            .state
-            .status
-            .read()
+        let status = (self.state.read_status)()
             .await
             .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
         let hosts = self.state.hosts.snapshot();

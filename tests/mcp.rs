@@ -3,6 +3,7 @@ mod common;
 use std::time::Duration;
 
 use common::*;
+use futures_util::FutureExt;
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, ContentBlock, ErrorCode, JsonObject, Tool,
 };
@@ -13,7 +14,7 @@ use tailnet_connector::agent;
 use tailnet_connector::hub::protocol::RegisteredService;
 use tailnet_connector::hub_server::hosts::{Caller, Host, Hosts};
 use tailnet_connector::hub_server::{self, HubState};
-use tailnet_connector::tailscale::{Status, StatusSource};
+use tailnet_connector::tailscale::Status;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
@@ -23,7 +24,7 @@ fn state(hosts: &Hosts) -> HubState {
     HubState {
         hosts: hosts.clone(),
         notify: Duration::from_secs(300),
-        status: StatusSource::Fixed(status()),
+        read_status: || std::future::ready(Ok(status())).boxed(),
     }
 }
 
