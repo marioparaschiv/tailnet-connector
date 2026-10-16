@@ -8,30 +8,9 @@ use tokio::time::{Instant, MissedTickBehavior, interval_at};
 
 use crate::checks;
 use crate::config::{Config, ConfigError};
-use crate::hub;
+use crate::hub::{self, Registration};
 use crate::reload::{self, Watcher};
-use crate::services::{Server, Services};
-
-/// What the hub should see: the listed services and which of them are available right now.
-pub struct Registration {
-    services: Arc<Services>,
-    available: BTreeSet<String>,
-}
-
-impl Registration {
-    /// The server behind `name`, if it is listed and available.
-    pub fn server(&self, name: &str) -> Option<&Arc<Server>> {
-        self.services
-            .get(name)
-            .filter(|_| self.available.contains(name))
-    }
-
-    pub fn available(&self) -> impl Iterator<Item = (&str, &Server)> {
-        self.available
-            .iter()
-            .filter_map(|name| Some((name.as_str(), self.services.get(name)?.as_ref())))
-    }
-}
+use crate::services::Services;
 
 pub struct Connector {
     config: Config,
@@ -148,17 +127,13 @@ impl Connector {
                 .filter_map(|name| previous.services.get(name).cloned())
                 .collect::<Vec<_>>()
         };
-        let names = available.iter().map(String::as_str).collect::<Vec<_>>();
-        let names = if names.is_empty() {
-            "none".to_owned()
-        } else {
-            names.join(", ")
-        };
-
-        self.registration.send_replace(Registration {
+        let registration = Registration {
             services,
             available,
-        });
+        };
+        let names = registration.names("none");
+
+        self.registration.send_replace(registration);
         join_all(lost.iter().map(|server| server.stop())).await;
         println!("available: {names}");
     }

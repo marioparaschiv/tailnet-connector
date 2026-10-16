@@ -113,14 +113,18 @@ impl Config {
         };
 
         let url = var("TAILNET_URL")?.ok_or(ConfigError::Missing("TAILNET_URL"))?;
-        let (connect_url, hub_host) = hub_urls(&url)?;
+        let (connect_url, hub_host) = Self::hub_urls(&url)?;
 
         let machine = match var("TAILNET_MACHINE")? {
             Some(machine) if machine.is_empty() => {
-                return Err(invalid("TAILNET_MACHINE", machine, "must not be empty"));
+                return Err(Self::invalid(
+                    "TAILNET_MACHINE",
+                    machine,
+                    "must not be empty",
+                ));
             }
             Some(machine) => machine,
-            None => default_machine(),
+            None => Self::default_machine(),
         };
 
         Ok(Self {
@@ -128,15 +132,94 @@ impl Config {
             connect_url,
             hub_host,
             machine,
-            idle: seconds("TAILNET_IDLE_SECONDS", var("TAILNET_IDLE_SECONDS")?, 300)?,
-            claude_config: path_or_home("CLAUDE_CONFIG", var("CLAUDE_CONFIG")?, &[".claude.json"])?,
-            checks: path_or_home(
+            idle: Self::seconds("TAILNET_IDLE_SECONDS", var("TAILNET_IDLE_SECONDS")?, 300)?,
+            claude_config: Self::path_or_home(
+                "CLAUDE_CONFIG",
+                var("CLAUDE_CONFIG")?,
+                &[".claude.json"],
+            )?,
+            checks: Self::path_or_home(
                 "TAILNET_CHECKS",
                 var("TAILNET_CHECKS")?,
                 &[".config", "tailnet", "checks.json"],
             )?,
-            check_interval: seconds("TAILNET_CHECK_SECONDS", var("TAILNET_CHECK_SECONDS")?, 10)?,
+            check_interval: Self::seconds(
+                "TAILNET_CHECK_SECONDS",
+                var("TAILNET_CHECK_SECONDS")?,
+                10,
+            )?,
         })
+    }
+
+    fn invalid(name: &'static str, value: String, reason: &'static str) -> ConfigError {
+        ConfigError::Invalid {
+            name,
+            value,
+            reason,
+        }
+    }
+
+    // TLS is not compiled in, so https/wss hubs are rejected here rather than failing on every
+    // connect.
+    fn hub_urls(url: &str) -> Result<(String, String), ConfigError> {
+        let not_a_url = || {
+            Self::invalid(
+                "TAILNET_URL",
+                url.to_owned(),
+                "must be an http:// or ws:// URL",
+            )
+        };
+        let uri: Uri = url.parse().map_err(|_| not_a_url())?;
+        let authority = uri.authority().ok_or_else(not_a_url)?;
+
+        match uri.scheme_str() {
+            Some("http" | "ws") => Ok((format!("ws://{authority}/connect"), host(&uri))),
+            _ => Err(not_a_url()),
+        }
+    }
+
+    fn default_machine() -> String {
+        Self::machine_name(&gethostname::gethostname().to_string_lossy())
+    }
+
+    fn machine_name(hostname: &str) -> String {
+        hostname
+            .strip_suffix(".local")
+            .unwrap_or(hostname)
+            .to_lowercase()
+    }
+
+    fn seconds(
+        name: &'static str,
+        value: Option<String>,
+        default: u64,
+    ) -> Result<Duration, ConfigError> {
+        let Some(value) = value else {
+            return Ok(Duration::from_secs(default));
+        };
+
+        match value.parse::<u64>() {
+            Ok(seconds) if seconds >= 1 => Ok(Duration::from_secs(seconds)),
+            _ => Err(Self::invalid(
+                name,
+                value,
+                "must be a whole number of seconds, at least 1",
+            )),
+        }
+    }
+
+    fn path_or_home(
+        name: &'static str,
+        value: Option<String>,
+        default: &[&str],
+    ) -> Result<PathBuf, ConfigError> {
+        if let Some(value) = value {
+            return Ok(PathBuf::from(value));
+        }
+
+        let home = env::home_dir().ok_or(ConfigError::NoHomeDir(name))?;
+
+        Ok(default.iter().fold(home, |path, part| path.join(part)))
     }
 }
 
@@ -176,32 +259,6 @@ pub fn host(uri: &Uri) -> String {
     }
 }
 
-fn invalid(name: &'static str, value: String, reason: &'static str) -> ConfigError {
-    ConfigError::Invalid {
-        name,
-        value,
-        reason,
-    }
-}
-
-// TLS is not compiled in, so https/wss hubs are rejected here rather than failing on every connect.
-fn hub_urls(url: &str) -> Result<(String, String), ConfigError> {
-    let not_a_url = || {
-        invalid(
-            "TAILNET_URL",
-            url.to_owned(),
-            "must be an http:// or ws:// URL",
-        )
-    };
-    let uri: Uri = url.parse().map_err(|_| not_a_url())?;
-    let authority = uri.authority().ok_or_else(not_a_url)?;
-
-    match uri.scheme_str() {
-        Some("http" | "ws") => Ok((format!("ws://{authority}/connect"), host(&uri))),
-        _ => Err(not_a_url()),
-    }
-}
-
 fn http_url<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Uri, D::Error> {
     let uri: Uri = String::deserialize(deserializer)?
         .parse()
@@ -225,48 +282,6 @@ fn headers<'de, D: Deserializer<'de>>(
             ))
         })
         .collect()
-}
-
-fn default_machine() -> String {
-    let hostname = gethostname::gethostname().to_string_lossy().into_owned();
-
-    hostname
-        .strip_suffix(".local")
-        .unwrap_or(&hostname)
-        .to_lowercase()
-}
-
-fn seconds(
-    name: &'static str,
-    value: Option<String>,
-    default: u64,
-) -> Result<Duration, ConfigError> {
-    let Some(value) = value else {
-        return Ok(Duration::from_secs(default));
-    };
-
-    match value.parse::<u64>() {
-        Ok(seconds) if seconds >= 1 => Ok(Duration::from_secs(seconds)),
-        _ => Err(invalid(
-            name,
-            value,
-            "must be a whole number of seconds, at least 1",
-        )),
-    }
-}
-
-fn path_or_home(
-    name: &'static str,
-    value: Option<String>,
-    default: &[&str],
-) -> Result<PathBuf, ConfigError> {
-    if let Some(value) = value {
-        return Ok(PathBuf::from(value));
-    }
-
-    let home = env::home_dir().ok_or(ConfigError::NoHomeDir(name))?;
-
-    Ok(default.iter().fold(home, |path, part| path.join(part)))
 }
 
 #[cfg(test)]
@@ -300,9 +315,20 @@ mod tests {
         assert_eq!(config.check_interval, Duration::from_secs(10));
         assert_eq!(config.claude_config, home.join(".claude.json"));
         assert_eq!(config.checks, home.join(".config/tailnet/checks.json"));
-        assert!(!config.machine.is_empty());
-        assert!(!config.machine.ends_with(".local"));
-        assert_eq!(config.machine, config.machine.to_lowercase());
+        assert_eq!(
+            config.machine,
+            Config::machine_name(&gethostname::gethostname().to_string_lossy())
+        );
+    }
+
+    #[test]
+    fn derives_machine_name_from_hostname() {
+        assert_eq!(
+            Config::machine_name("Marios-MacBook.local"),
+            "marios-macbook"
+        );
+        assert_eq!(Config::machine_name("VPS"), "vps");
+        assert_eq!(Config::machine_name("host.local.lan"), "host.local.lan");
     }
 
     #[test]
