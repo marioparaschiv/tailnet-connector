@@ -1,8 +1,10 @@
 use std::process::Command;
 use std::time::Duration;
 
+use futures_util::FutureExt;
 use tailnet_connector::hub_server::hosts::Hosts;
 use tailnet_connector::hub_server::{self, HubState};
+use tailnet_connector::tailscale::Status;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
@@ -24,6 +26,7 @@ async fn answers_unknown_paths_with_404() {
     let state = HubState {
         hosts: Hosts::default(),
         notify: Duration::from_secs(300),
+        read_status: || Status::read().boxed(),
     };
     tokio::spawn(hub_server::serve(listener, state));
 
