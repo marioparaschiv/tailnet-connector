@@ -74,7 +74,7 @@ pub async fn available<'a>(
 }
 
 // A socket file can outlive the app that made it, so only an accepted connection counts.
-pub async fn passes(check: &Check) -> bool {
+async fn passes(check: &Check) -> bool {
     let connect = async {
         match check {
             Check::Tcp(TcpAddress { host, port }) => {
