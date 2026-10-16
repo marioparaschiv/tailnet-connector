@@ -151,6 +151,14 @@ impl Server {
         &self.tools
     }
 
+    /// The URL of an http server, which lets the hub tell it apart from an agent's own servers.
+    pub fn url(&self) -> Option<String> {
+        match &self.config {
+            ServerConfig::Http { url, .. } => Some(url.to_string()),
+            ServerConfig::Stdio { .. } => None,
+        }
+    }
+
     /// Starts the server if it isn't running; a failed start is retried by the next call.
     pub async fn call_tool(
         self: &Arc<Self>,

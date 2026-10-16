@@ -32,6 +32,7 @@ async fn registers_fixture_tools_and_proxies_calls() {
 
     assert_eq!(register["machine"], MACHINE);
     assert_eq!(registered_names(&register), ["echo"]);
+    assert!(register["services"][0].get("url").is_none());
     let echo_tool = register["services"][0]["tools"]
         .as_array()
         .unwrap()
@@ -169,12 +170,13 @@ async fn serve_http_mcp() -> String {
 #[tokio::test]
 async fn proxies_http_servers_with_their_headers() {
     let hub = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = serve_http_mcp().await;
     let claude_config = claude_config(
         "proxies-http.json",
         json!({
             "remote": {
                 "type": "http",
-                "url": serve_http_mcp().await,
+                "url": url,
                 "headers": { "X-Tailnet-Test": "secret" },
             },
         }),
@@ -185,6 +187,7 @@ async fn proxies_http_servers_with_their_headers() {
     let register = receive(&mut socket).await;
     assert_eq!(registered_names(&register), ["remote"]);
     assert_eq!(register["services"][0]["tools"][0]["name"], "header");
+    assert_eq!(register["services"][0]["url"], url);
 
     let reply = call(
         &mut socket,

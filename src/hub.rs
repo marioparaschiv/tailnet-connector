@@ -71,6 +71,8 @@ enum ConnectorMessage<'a> {
 struct RegisteredService<'a> {
     name: &'a str,
     tools: &'a [Tool],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    url: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -165,6 +167,7 @@ fn register_message(machine: &str, registration: &Registration) -> Message {
             .map(|(name, server)| RegisteredService {
                 name,
                 tools: server.tools(),
+                url: server.url(),
             })
             .collect(),
     })
