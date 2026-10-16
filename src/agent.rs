@@ -9,8 +9,8 @@ use std::sync::Arc;
 
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ClientCapabilities, ClientConfig,
-    ContentBlock, Implementation, ListToolsResult, PaginatedRequestParams, ServerCapabilities,
-    ServerConfig,
+    ContentBlock, Implementation, ListToolsResult, PaginatedRequestParams, ResultType,
+    ServerCapabilities, ServerConfig,
 };
 use rmcp::service::{
     NotificationContext, Peer, RequestContext, RunningService, ServerInitializeError, ServiceError,
@@ -256,7 +256,13 @@ impl ServerHandler for Proxy {
             })
             .await
         {
-            Ok(result) => Ok(result.into()),
+            // The hub session predates 2026-07-28, so its results lack the `resultType` an agent on
+            // that version requires; rmcp only ever strips it for older agents.
+            Ok(mut result) => {
+                result.result_type.get_or_insert(ResultType::COMPLETE);
+
+                Ok(result.into())
+            }
             Err(AgentError::Hub(ClientError::Request(ServiceError::McpError(error)))) => Err(error),
             // An error result reaches the agent's model, where a protocol error would not.
             Err(error) => {

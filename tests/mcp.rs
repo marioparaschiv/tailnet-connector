@@ -5,7 +5,8 @@ use std::time::Duration;
 use common::*;
 use futures_util::FutureExt;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, ContentBlock, ErrorCode, JsonObject, Tool,
+    CallToolRequestParams, CallToolResult, ClientCapabilities, ErrorCode, Implementation,
+    JsonObject, ProtocolVersion, RequestMetaObject, RequestParamsMeta, ResultType, Tool,
 };
 use rmcp::service::{RunningService, ServiceError};
 use rmcp::{RoleClient, ServiceExt};
@@ -81,7 +82,8 @@ fn service(name: &str, url: Option<&str>, tools: &[&str]) -> RegisteredService {
     }
 }
 
-/// Adds a host that answers each call with what it was asked, or fails calls to `fail`.
+/// Adds a host that answers each call with what it was asked, or fails calls to `fail`. Results
+/// come off the wire without `resultType`, as from a connector whose server predates 2026-07-28.
 fn add_host(hosts: &Hosts, machine: &str, services: Vec<RegisteredService>) {
     let (caller, mut calls) = Caller::channel();
     hosts.insert(machine.to_owned(), Host { services, caller });
@@ -91,11 +93,17 @@ fn add_host(hosts: &Hosts, machine: &str, services: Vec<RegisteredService>) {
         while let Some(call) = calls.recv().await {
             let reply = match call.tool.as_str() {
                 "fail" => Err(format!("{} cannot fail", call.service)),
-                tool => Ok(CallToolResult::success(vec![ContentBlock::text(format!(
-                    "{machine} {} {tool} {}",
-                    call.service,
-                    Value::from(call.arguments.unwrap_or_default())
-                ))])),
+                tool => Ok(serde_json::from_value(json!({
+                    "content": [{
+                        "type": "text",
+                        "text": format!(
+                            "{machine} {} {tool} {}",
+                            call.service,
+                            Value::from(call.arguments.unwrap_or_default())
+                        ),
+                    }],
+                }))
+                .unwrap()),
             };
             call.reply.send(reply).unwrap();
         }
@@ -195,6 +203,24 @@ async fn lists_and_calls_every_host_tool_through_the_agent() {
             "Unknown tool tablet__echo__echo; its machine may have disconnected".to_owned()
         )
     );
+}
+
+#[tokio::test]
+async fn marks_relayed_results_complete_for_2026_07_28_agents() {
+    let hosts = Hosts::default();
+    add_host(&hosts, "laptop", vec![service("echo", None, &["echo"])]);
+    let agent = start_agent(state(&hosts), "mcp-result-type", json!({})).await;
+    // Claude Code skips initialize and names its protocol version on every request.
+    let mut request = CallToolRequestParams::new("laptop__echo__echo");
+    request.set_meta(RequestMetaObject::with_client_context(
+        ProtocolVersion::V_2026_07_28,
+        Implementation::new("claude-code", "1"),
+        ClientCapabilities::default(),
+    ));
+
+    let result = agent.call_tool(request).await.unwrap();
+
+    assert_eq!(result.result_type, Some(ResultType::COMPLETE));
 }
 
 #[tokio::test]
