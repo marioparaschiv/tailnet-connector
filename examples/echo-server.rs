@@ -1,4 +1,4 @@
-//! Stdio MCP server used as a test fixture, mirroring tailnet-mcp's echo-server.ts.
+//! Stdio MCP server used as a test fixture.
 
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{ServerCapabilities, ServerConfig};
