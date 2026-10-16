@@ -21,15 +21,13 @@ use rmcp::{ClientHandler, ErrorData, RoleClient, RoleServer, ServerHandler, Serv
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{RwLock, mpsc};
 use tokio::time::{Instant, MissedTickBehavior, interval_at};
+use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::http::header::InvalidHeaderValue;
-use tokio_tungstenite::tungstenite::http::{HeaderName, HeaderValue};
 
 use crate::config::{Config, ConfigError};
-use crate::known_servers::{KnownServer, KnownServers};
+use crate::known_servers::{KNOWN_SERVERS_HEADER, KnownServer, KnownServers};
 use crate::reload;
 use crate::services::ClientError;
-
-const KNOWN_SERVERS_HEADER: HeaderName = HeaderName::from_static("x-tailnet-known-servers");
 
 #[derive(Debug)]
 pub enum AgentError {

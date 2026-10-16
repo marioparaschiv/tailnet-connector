@@ -4,13 +4,16 @@ use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio_tungstenite::tungstenite::http::Uri;
+use tokio_tungstenite::tungstenite::http::{HeaderName, Uri};
 
 use crate::config::{self, Config, ConfigError, McpServers};
 use crate::reload;
 
+/// Carries an agent's known servers to the hub as a JSON array.
+pub const KNOWN_SERVERS_HEADER: HeaderName = HeaderName::from_static("x-tailnet-known-servers");
+
 /// An MCP server an agent already has, which the hub then leaves out of that agent's tools.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KnownServer {
     pub name: String,
     /// Set for http servers, which the hub matches by URL; stdio servers match by name.
