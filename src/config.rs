@@ -228,11 +228,13 @@ fn headers<'de, D: Deserializer<'de>>(
 }
 
 fn default_machine() -> String {
-    let hostname = gethostname::gethostname().to_string_lossy().into_owned();
+    machine_name(&gethostname::gethostname().to_string_lossy())
+}
 
+fn machine_name(hostname: &str) -> String {
     hostname
         .strip_suffix(".local")
-        .unwrap_or(&hostname)
+        .unwrap_or(hostname)
         .to_lowercase()
 }
 
@@ -300,9 +302,17 @@ mod tests {
         assert_eq!(config.check_interval, Duration::from_secs(10));
         assert_eq!(config.claude_config, home.join(".claude.json"));
         assert_eq!(config.checks, home.join(".config/tailnet/checks.json"));
-        assert!(!config.machine.is_empty());
-        assert!(!config.machine.ends_with(".local"));
-        assert_eq!(config.machine, config.machine.to_lowercase());
+        assert_eq!(
+            config.machine,
+            machine_name(&gethostname::gethostname().to_string_lossy())
+        );
+    }
+
+    #[test]
+    fn derives_machine_name_from_hostname() {
+        assert_eq!(machine_name("Marios-MacBook.local"), "marios-macbook");
+        assert_eq!(machine_name("VPS"), "vps");
+        assert_eq!(machine_name("host.local.lan"), "host.local.lan");
     }
 
     #[test]
