@@ -13,11 +13,22 @@ struct EchoRequest {
     text: String,
 }
 
+#[derive(serde::Deserialize, rmcp::schemars::JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct EnvRequest {
+    name: String,
+}
+
 #[tool_router]
 impl Echo {
     #[tool(description = "Echo text back")]
     fn echo(&self, Parameters(EchoRequest { text }): Parameters<EchoRequest>) -> String {
         format!("echo from pid {}: {text}", std::process::id())
+    }
+
+    #[tool(description = "Return an environment variable, empty when unset")]
+    fn env(&self, Parameters(EnvRequest { name }): Parameters<EnvRequest>) -> String {
+        std::env::var(name).unwrap_or_default()
     }
 
     #[tool(description = "Never return")]

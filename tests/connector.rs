@@ -1,105 +1,47 @@
+mod common;
+
 use std::collections::HashMap;
-use std::env::VarError;
-use std::env::consts::EXE_SUFFIX;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::Path;
+use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures_util::{SinkExt, StreamExt};
-use serde_json::{Value, json};
-use tailnet_connector::config::{self, Config, McpServers};
-use tailnet_connector::hub;
-use tailnet_connector::services::Services;
-use tokio::net::{TcpListener, TcpStream};
+use common::*;
+use rmcp::handler::server::tool::Extension;
+use rmcp::handler::server::wrapper::Parameters;
+use rmcp::model::{ServerCapabilities, ServerConfig};
+use rmcp::transport::streamable_http_server::{
+    StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
+};
+use rmcp::{ServerHandler, tool, tool_handler, tool_router};
+use serde_json::json;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+use tokio::net::TcpListener;
 use tokio::time::Instant;
-use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::{WebSocketStream, accept_async};
-
-const MACHINE: &str = "test-machine";
-
-// Cargo builds examples before running integration tests, next to the test binary's deps dir.
-fn echo_server_path() -> PathBuf {
-    let exe = std::env::current_exe().unwrap();
-    let profile_dir = exe.parent().unwrap().parent().unwrap();
-
-    profile_dir
-        .join("examples")
-        .join(format!("echo-server{EXE_SUFFIX}"))
-}
-
-fn write_claude_config(name: &str, contents: &Value) -> PathBuf {
-    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
-    std::fs::write(&path, contents.to_string()).unwrap();
-
-    path
-}
-
-fn config(hub: &TcpListener) -> Config {
-    let vars = HashMap::from([
-        (
-            "TAILNET_URL",
-            format!("http://{}", hub.local_addr().unwrap()),
-        ),
-        ("TAILNET_MACHINE", MACHINE.to_owned()),
-    ]);
-
-    Config::from_lookup(|name| vars.get(name).cloned().ok_or(VarError::NotPresent)).unwrap()
-}
-
-fn start_connector(config: Config, services: Services) {
-    tokio::spawn(async move { hub::run(&config, Arc::new(services)).await });
-}
-
-async fn accept(hub: &TcpListener) -> WebSocketStream<TcpStream> {
-    let (stream, _) = hub.accept().await.unwrap();
-
-    accept_async(stream).await.unwrap()
-}
-
-async fn receive(socket: &mut WebSocketStream<TcpStream>) -> Value {
-    loop {
-        if let Message::Text(text) = socket.next().await.unwrap().unwrap() {
-            return serde_json::from_str(&text).unwrap();
-        }
-    }
-}
-
-async fn send(socket: &mut WebSocketStream<TcpStream>, message: Value) {
-    socket
-        .send(Message::text(message.to_string()))
-        .await
-        .unwrap();
-}
+use tokio_tungstenite::accept_async;
+use tokio_tungstenite::tungstenite::http::request::Parts;
 
 #[tokio::test]
 async fn registers_fixture_tools_and_proxies_calls() {
-    let claude_config = write_claude_config(
-        "proxies-calls.json",
-        &json!({
-            "mcpServers": {
-                "echo": { "type": "stdio", "command": echo_server_path() },
-                "remote": { "type": "http", "url": "http://example.com/mcp" },
-            },
-        }),
-    );
-    let services = Services::start(config::read_mcp_servers(&claude_config).unwrap()).await;
+    let claude_config = claude_config("proxies-calls.json", json!({ "echo": echo_entry() }));
     let hub = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    start_connector(config(&hub), services);
+    start_connector(config(&hub, &claude_config, &[])).await;
 
     let mut socket = accept(&hub).await;
     let register = receive(&mut socket).await;
 
-    assert_eq!(register["type"], "register");
     assert_eq!(register["machine"], MACHINE);
-    assert_eq!(register["services"].as_array().unwrap().len(), 1);
-    assert_eq!(register["services"][0]["name"], "echo");
-    assert_eq!(register["services"][0]["tools"][0]["name"], "echo");
+    assert_eq!(registered_names(&register), ["echo"]);
+    let echo_tool = register["services"][0]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "echo")
+        .unwrap();
     assert_eq!(
-        register["services"][0]["tools"][0]["inputSchema"]["properties"]["text"]["type"],
+        echo_tool["inputSchema"]["properties"]["text"]["type"],
         "string"
     );
-    assert_eq!(register["services"][0]["tools"][1]["name"], "hang");
 
     // The hanging call stays in flight while the others are answered.
     send(
@@ -130,10 +72,7 @@ async fn registers_fixture_tools_and_proxies_calls() {
         replies.insert(reply["id"].as_u64().unwrap(), reply);
     }
 
-    let echoed = &replies[&2];
-    let text = echoed["result"]["content"][0]["text"].as_str().unwrap();
-
-    assert_eq!(echoed["type"], "result");
+    let text = result_text(&replies[&2]);
     assert!(
         text.starts_with("echo from pid ") && text.ends_with(": hi"),
         "{text}"
@@ -150,8 +89,9 @@ async fn registers_fixture_tools_and_proxies_calls() {
 
 #[tokio::test(start_paused = true)]
 async fn reconnects_with_backoff_and_registers_again() {
+    let claude_config = claude_config("reconnects.json", json!({}));
     let hub = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    start_connector(config(&hub), Services::start(McpServers::new()).await);
+    start_connector(config(&hub, &claude_config, &[])).await;
 
     let mut socket = accept(&hub).await;
     assert_eq!(receive(&mut socket).await["type"], "register");
@@ -177,6 +117,170 @@ async fn reconnects_with_backoff_and_registers_again() {
 
     let mut socket = accept_async(wait_for_attempt(1).await).await.unwrap();
     assert_eq!(receive(&mut socket).await["machine"], MACHINE);
+}
+
+#[derive(Clone)]
+struct HeaderServer;
+
+#[derive(serde::Deserialize, rmcp::schemars::JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct HeaderRequest {
+    name: String,
+}
+
+#[tool_router]
+impl HeaderServer {
+    #[tool(description = "Return a request header, empty when missing")]
+    fn header(
+        &self,
+        Extension(parts): Extension<Parts>,
+        Parameters(HeaderRequest { name }): Parameters<HeaderRequest>,
+    ) -> String {
+        parts
+            .headers
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_owned()
+    }
+}
+
+#[tool_handler]
+impl ServerHandler for HeaderServer {
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
+    }
+}
+
+async fn serve_http_mcp() -> String {
+    let service = StreamableHttpService::new(
+        || Ok(HeaderServer),
+        Arc::new(LocalSessionManager::default()),
+        StreamableHttpServerConfig::default(),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+    let router = axum::Router::new().nest_service("/mcp", service);
+    tokio::spawn(async move { axum::serve(listener, router).await });
+
+    url
+}
+
+#[tokio::test]
+async fn proxies_http_servers_with_their_headers() {
+    let hub = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let claude_config = claude_config(
+        "proxies-http.json",
+        json!({
+            "remote": {
+                "type": "http",
+                "url": serve_http_mcp().await,
+                "headers": { "X-Tailnet-Test": "secret" },
+            },
+        }),
+    );
+    start_connector(config(&hub, &claude_config, &[])).await;
+
+    let mut socket = accept(&hub).await;
+    let register = receive(&mut socket).await;
+    assert_eq!(registered_names(&register), ["remote"]);
+    assert_eq!(register["services"][0]["tools"][0]["name"], "header");
+
+    let reply = call(
+        &mut socket,
+        1,
+        "remote",
+        "header",
+        json!({ "name": "x-tailnet-test" }),
+    )
+    .await;
+    assert_eq!(result_text(&reply), "secret");
+}
+
+#[tokio::test]
+async fn layers_stdio_env_over_the_connector_environment() {
+    let hub = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let claude_config = claude_config(
+        "stdio-env.json",
+        json!({
+            "echo": {
+                "type": "stdio",
+                "command": echo_server_path(),
+                "args": [],
+                "env": { "TAILNET_FIXTURE": "from-config" },
+            },
+        }),
+    );
+    start_connector(config(&hub, &claude_config, &[])).await;
+
+    let mut socket = accept(&hub).await;
+    receive(&mut socket).await;
+
+    let reply = call(
+        &mut socket,
+        1,
+        "echo",
+        "env",
+        json!({ "name": "TAILNET_FIXTURE" }),
+    )
+    .await;
+    assert_eq!(result_text(&reply), "from-config");
+
+    let reply = call(&mut socket, 2, "echo", "env", json!({ "name": "PATH" })).await;
+    assert_eq!(result_text(&reply), std::env::var("PATH").unwrap());
+}
+
+#[tokio::test]
+async fn skips_unsupported_entries_and_the_hub_itself() {
+    let hub = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let hub_url = format!("http://{}", hub.local_addr().unwrap());
+    let claude_config = claude_config(
+        "skips-entries.json",
+        json!({
+            "tailnet": { "type": "http", "url": format!("{hub_url}/mcp") },
+            "legacy": { "type": "sse", "url": "http://127.0.0.1:9/sse" },
+            "echo": echo_entry(),
+        }),
+    );
+
+    let mut connector = tokio::process::Command::new(env!("CARGO_BIN_EXE_tailnet-connector"))
+        .env("TAILNET_URL", &hub_url)
+        .env("TAILNET_MACHINE", MACHINE)
+        .env("CLAUDE_CONFIG", &claude_config)
+        .env("TAILNET_CHECKS", temp_path("missing-checks.json"))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+
+    let mut socket = accept(&hub).await;
+    assert_eq!(registered_names(&receive(&mut socket).await), ["echo"]);
+
+    let mut stdout = BufReader::new(connector.stdout.take().unwrap()).lines();
+    assert_eq!(
+        stdout.next_line().await.unwrap().unwrap(),
+        "available: echo"
+    );
+    assert_eq!(
+        stdout.next_line().await.unwrap().unwrap(),
+        format!("connected to {hub_url} as {MACHINE}: echo")
+    );
+
+    connector.kill().await.unwrap();
+    let mut stderr = String::new();
+    connector
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut stderr)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        stderr,
+        "skipping legacy: only stdio and http MCP servers can be proxied\n"
+    );
 }
 
 fn run_binary(envs: &[(&str, &Path)]) -> String {
@@ -219,7 +323,7 @@ fn fails_at_startup_on_invalid_number() {
 
 #[test]
 fn fails_at_startup_on_malformed_claude_config() {
-    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("malformed-claude.json");
+    let path = temp_path("malformed-claude.json");
     std::fs::write(&path, "{ \"mcpServers\": ").unwrap();
 
     let stderr = run_binary(&[
@@ -229,6 +333,25 @@ fn fails_at_startup_on_malformed_claude_config() {
 
     assert!(
         stderr.starts_with(&format!("cannot parse {}: ", path.display())),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn fails_at_startup_on_malformed_checks_file() {
+    let claude_config = claude_config("checks-malformed-claude.json", json!({}));
+    let checks = temp_path("malformed-checks.json");
+    std::fs::write(&checks, r#"{ "vphone": { "tcp": "no-port" } }"#).unwrap();
+
+    let stderr = run_binary(&[
+        ("TAILNET_URL", Path::new("http://127.0.0.1:9")),
+        ("CLAUDE_CONFIG", &claude_config),
+        ("TAILNET_CHECKS", &checks),
+    ]);
+
+    assert!(
+        stderr.starts_with(&format!("cannot parse {}: ", checks.display()))
+            && stderr.contains("expected host:port"),
         "{stderr}"
     );
 }

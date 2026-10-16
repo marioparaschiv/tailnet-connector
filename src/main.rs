@@ -1,14 +1,23 @@
-use std::process::ExitCode;
-use std::sync::Arc;
+// No console window on Windows; TAILNET_LOG receives the output instead.
+#![cfg_attr(windows, windows_subsystem = "windows")]
 
-use tailnet_connector::config::{self, Config, ConfigError, McpServers};
-use tailnet_connector::hub;
-use tailnet_connector::services::Services;
+use std::process::ExitCode;
+
+use tailnet_connector::config::Config;
+use tailnet_connector::connector::Connector;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
-    let (config, mcp_servers) = match load() {
-        Ok(loaded) => loaded,
+    // Nothing can be reported without an output yet, so the exit code is all there is.
+    #[cfg(windows)]
+    if let Some(path) = std::env::var_os("TAILNET_LOG")
+        && tailnet_connector::log_file::append_output_to(std::path::Path::new(&path)).is_err()
+    {
+        return ExitCode::FAILURE;
+    }
+
+    let config = match Config::from_env() {
+        Ok(config) => config,
         Err(error) => {
             eprintln!("{error}");
 
@@ -16,14 +25,12 @@ async fn main() -> ExitCode {
         }
     };
 
-    let services = Arc::new(Services::start(mcp_servers).await);
+    match Connector::start(config).await {
+        Ok(connector) => match connector.run().await {},
+        Err(error) => {
+            eprintln!("{error}");
 
-    match hub::run(&config, services).await {}
-}
-
-fn load() -> Result<(Config, McpServers), ConfigError> {
-    let config = Config::from_env()?;
-    let mcp_servers = config::read_mcp_servers(&config.claude_config)?;
-
-    Ok((config, mcp_servers))
+            ExitCode::FAILURE
+        }
+    }
 }

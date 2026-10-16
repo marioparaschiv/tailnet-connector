@@ -6,12 +6,14 @@ use futures_util::{SinkExt, StreamExt};
 use rmcp::model::{CallToolResult, JsonObject, Tool};
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpStream;
+use tokio::sync::watch;
 use tokio::task::JoinSet;
 use tokio_tungstenite::tungstenite::{Error as WsError, Message};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 
 use crate::config::Config;
-use crate::services::Services;
+use crate::connector::Registration;
+use crate::services::Server;
 
 const FIRST_RETRY: Duration = Duration::from_secs(1);
 const MAX_RETRY: Duration = Duration::from_secs(60);
@@ -51,7 +53,7 @@ enum HubMessage {
 }
 
 /// Keeps a registered connection to the hub open forever, reconnecting with exponential backoff.
-pub async fn run(config: &Config, services: Arc<Services>) -> Infallible {
+pub async fn run(config: &Config, mut registration: watch::Receiver<Registration>) -> Infallible {
     let mut retry = FIRST_RETRY;
 
     loop {
@@ -59,7 +61,7 @@ pub async fn run(config: &Config, services: Arc<Services>) -> Infallible {
             Ok((socket, _)) => {
                 retry = FIRST_RETRY;
 
-                if let Err(error) = serve(config, &services, socket).await {
+                if let Err(error) = serve(config, &mut registration, socket).await {
                     eprintln!("connection to {} failed: {error}", config.url);
                 }
             }
@@ -74,28 +76,22 @@ pub async fn run(config: &Config, services: Arc<Services>) -> Infallible {
 
 async fn serve(
     config: &Config,
-    services: &Arc<Services>,
+    registration: &mut watch::Receiver<Registration>,
     socket: WebSocketStream<MaybeTlsStream<TcpStream>>,
 ) -> Result<(), WsError> {
     let (mut sink, mut stream) = socket.split();
-    let register = ConnectorMessage::Register {
-        machine: &config.machine,
-        services: services
-            .iter()
-            .map(|(name, server)| RegisteredService {
-                name,
-                tools: server.tools(),
-            })
-            .collect(),
-    };
-    sink.send(encode(&register)).await?;
+    let (register, names) = {
+        let registration = registration.borrow_and_update();
+        let names: Vec<&str> = registration.available().map(|(name, _)| name).collect();
+        let names = if names.is_empty() {
+            "no services available".to_owned()
+        } else {
+            names.join(", ")
+        };
 
-    let names: Vec<&str> = services.iter().map(|(name, _)| name).collect();
-    let names = if names.is_empty() {
-        "no services available".to_owned()
-    } else {
-        names.join(", ")
+        (register_message(&config.machine, &registration), names)
     };
+    sink.send(register).await?;
     println!("connected to {} as {}: {names}", config.url, config.machine);
 
     // Calls run as separate tasks so a slow tool never holds up the others.
@@ -112,12 +108,18 @@ async fn serve(
 
                     match serde_json::from_str::<HubMessage>(&text) {
                         Ok(call) => {
-                            calls.spawn(handle_call(config.machine.clone(), Arc::clone(services), call));
+                            let HubMessage::Call { ref service, .. } = call;
+                            let server = registration.borrow().server(service).cloned();
+                            calls.spawn(handle_call(config.machine.clone(), server, call));
                         }
                         Err(error) => eprintln!("bad call from supervisor: {error}"),
                     }
                 }
             },
+            Ok(()) = registration.changed() => {
+                let register = register_message(&config.machine, &registration.borrow_and_update());
+                sink.send(register).await?;
+            }
             Some(reply) = calls.join_next() => match reply {
                 Ok(reply) => sink.send(reply).await?,
                 Err(error) => eprintln!("call failed: {error}"),
@@ -126,7 +128,20 @@ async fn serve(
     }
 }
 
-async fn handle_call(machine: String, services: Arc<Services>, call: HubMessage) -> Message {
+fn register_message(machine: &str, registration: &Registration) -> Message {
+    encode(&ConnectorMessage::Register {
+        machine,
+        services: registration
+            .available()
+            .map(|(name, server)| RegisteredService {
+                name,
+                tools: server.tools(),
+            })
+            .collect(),
+    })
+}
+
+async fn handle_call(machine: String, server: Option<Arc<Server>>, call: HubMessage) -> Message {
     let HubMessage::Call {
         id,
         service,
@@ -134,7 +149,7 @@ async fn handle_call(machine: String, services: Arc<Services>, call: HubMessage)
         arguments,
     } = call;
 
-    let reply = match services.get(&service) {
+    let reply = match server {
         None => ConnectorMessage::Error {
             id,
             message: format!("{service} is not available on {machine}"),

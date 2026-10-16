@@ -1,12 +1,13 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::env::{self, VarError};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use serde::Deserialize;
-use serde::de::IgnoredAny;
-use tokio_tungstenite::tungstenite::http::Uri;
+use serde::de::{DeserializeOwned, Error as _};
+use serde::{Deserialize, Deserializer};
+use serde_json::{Map, Value};
+use tokio_tungstenite::tungstenite::http::{HeaderName, HeaderValue, Uri};
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -14,6 +15,8 @@ pub struct Config {
     pub url: String,
     /// The hub's WebSocket endpoint derived from `url`.
     pub connect_url: String,
+    /// The hub's host as compared against http MCP server URLs.
+    pub hub_host: String,
     pub machine: String,
     pub idle: Duration,
     pub claude_config: PathBuf,
@@ -24,17 +27,23 @@ pub struct Config {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum ServerConfig {
-    Stdio { command: String },
+    Stdio {
+        command: String,
+        #[serde(default)]
+        args: Vec<String>,
+        #[serde(default)]
+        env: BTreeMap<String, String>,
+    },
+    Http {
+        #[serde(deserialize_with = "http_url")]
+        url: Uri,
+        #[serde(default, deserialize_with = "headers")]
+        headers: HashMap<HeaderName, HeaderValue>,
+    },
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-pub enum ServerEntry {
-    Supported(ServerConfig),
-    Unsupported(IgnoredAny),
-}
-
-pub type McpServers = BTreeMap<String, ServerEntry>;
+/// The raw `mcpServers` object, kept unparsed so a reload can tell whether it changed.
+pub type McpServers = Map<String, Value>;
 
 #[derive(Debug)]
 pub enum ConfigError {
@@ -46,11 +55,11 @@ pub enum ConfigError {
         reason: &'static str,
     },
     NoHomeDir(&'static str),
-    ReadClaudeConfig {
+    Read {
         path: PathBuf,
         source: std::io::Error,
     },
-    ParseClaudeConfig {
+    Parse {
         path: PathBuf,
         source: serde_json::Error,
     },
@@ -69,10 +78,10 @@ impl fmt::Display for ConfigError {
             Self::NoHomeDir(name) => {
                 write!(f, "{name} is not set and the home directory is unknown")
             }
-            Self::ReadClaudeConfig { path, source } => {
+            Self::Read { path, source } => {
                 write!(f, "cannot read {}: {source}", path.display())
             }
-            Self::ParseClaudeConfig { path, source } => {
+            Self::Parse { path, source } => {
                 write!(f, "cannot parse {}: {source}", path.display())
             }
         }
@@ -82,8 +91,8 @@ impl fmt::Display for ConfigError {
 impl std::error::Error for ConfigError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::ReadClaudeConfig { source, .. } => Some(source),
-            Self::ParseClaudeConfig { source, .. } => Some(source),
+            Self::Read { source, .. } => Some(source),
+            Self::Parse { source, .. } => Some(source),
             _ => None,
         }
     }
@@ -104,7 +113,7 @@ impl Config {
         };
 
         let url = var("TAILNET_URL")?.ok_or(ConfigError::Missing("TAILNET_URL"))?;
-        let connect_url = connect_url(&url)?;
+        let (connect_url, hub_host) = hub_urls(&url)?;
 
         let machine = match var("TAILNET_MACHINE")? {
             Some(machine) if machine.is_empty() => {
@@ -117,6 +126,7 @@ impl Config {
         Ok(Self {
             url,
             connect_url,
+            hub_host,
             machine,
             idle: seconds("TAILNET_IDLE_SECONDS", var("TAILNET_IDLE_SECONDS")?, 300)?,
             claude_config: path_or_home("CLAUDE_CONFIG", var("CLAUDE_CONFIG")?, &[".claude.json"])?,
@@ -137,17 +147,33 @@ pub fn read_mcp_servers(path: &Path) -> Result<McpServers, ConfigError> {
         mcp_servers: McpServers,
     }
 
-    let text = std::fs::read_to_string(path).map_err(|source| ConfigError::ReadClaudeConfig {
+    Ok(read_json::<ClaudeConfig>(path)?.mcp_servers)
+}
+
+pub fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T, ConfigError> {
+    let text = std::fs::read_to_string(path).map_err(|source| ConfigError::Read {
         path: path.to_owned(),
         source,
     })?;
-    let config: ClaudeConfig =
-        serde_json::from_str(&text).map_err(|source| ConfigError::ParseClaudeConfig {
-            path: path.to_owned(),
-            source,
-        })?;
 
-    Ok(config.mcp_servers)
+    serde_json::from_str(&text).map_err(|source| ConfigError::Parse {
+        path: path.to_owned(),
+        source,
+    })
+}
+
+/// The host part of a URL the way WHATWG's `URL.host` reports it: lowercase, default port left out.
+pub fn host(uri: &Uri) -> String {
+    let host = uri.host().unwrap_or_default().to_ascii_lowercase();
+    let default_port = match uri.scheme_str() {
+        Some("https" | "wss") => 443,
+        _ => 80,
+    };
+
+    match uri.port_u16() {
+        Some(port) if port != default_port => format!("{host}:{port}"),
+        _ => host,
+    }
 }
 
 fn invalid(name: &'static str, value: String, reason: &'static str) -> ConfigError {
@@ -159,7 +185,7 @@ fn invalid(name: &'static str, value: String, reason: &'static str) -> ConfigErr
 }
 
 // TLS is not compiled in, so https/wss hubs are rejected here rather than failing on every connect.
-fn connect_url(url: &str) -> Result<String, ConfigError> {
+fn hub_urls(url: &str) -> Result<(String, String), ConfigError> {
     let not_a_url = || {
         invalid(
             "TAILNET_URL",
@@ -171,9 +197,34 @@ fn connect_url(url: &str) -> Result<String, ConfigError> {
     let authority = uri.authority().ok_or_else(not_a_url)?;
 
     match uri.scheme_str() {
-        Some("http" | "ws") => Ok(format!("ws://{authority}/connect")),
+        Some("http" | "ws") => Ok((format!("ws://{authority}/connect"), host(&uri))),
         _ => Err(not_a_url()),
     }
+}
+
+fn http_url<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Uri, D::Error> {
+    let uri: Uri = String::deserialize(deserializer)?
+        .parse()
+        .map_err(D::Error::custom)?;
+
+    match uri.scheme_str() {
+        Some("http" | "https") if uri.authority().is_some() => Ok(uri),
+        _ => Err(D::Error::custom("expected an http:// or https:// URL")),
+    }
+}
+
+fn headers<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<HashMap<HeaderName, HeaderValue>, D::Error> {
+    BTreeMap::<String, String>::deserialize(deserializer)?
+        .into_iter()
+        .map(|(name, value)| {
+            Ok((
+                name.parse().map_err(D::Error::custom)?,
+                value.parse().map_err(D::Error::custom)?,
+            ))
+        })
+        .collect()
 }
 
 fn default_machine() -> String {
@@ -244,6 +295,7 @@ mod tests {
         let home = env::home_dir().unwrap();
 
         assert_eq!(config.connect_url, "ws://100.65.233.54:8790/connect");
+        assert_eq!(config.hub_host, "100.65.233.54:8790");
         assert_eq!(config.idle, Duration::from_secs(300));
         assert_eq!(config.check_interval, Duration::from_secs(10));
         assert_eq!(config.claude_config, home.join(".claude.json"));
@@ -304,27 +356,52 @@ mod tests {
     }
 
     #[test]
-    fn parses_mcp_servers() {
+    fn parses_server_configs() {
         let path = write_temp(
             "mcp-servers.json",
             r#"{
                 "numStartups": 3,
                 "mcpServers": {
-                    "echo": { "type": "stdio", "command": "echo-server", "args": [] },
-                    "remote": { "type": "http", "url": "http://example.com/mcp" },
-                    "legacy": { "command": "no-type" }
+                    "echo": { "type": "stdio", "command": "echo-server", "args": ["-v"], "env": { "A": "1" } },
+                    "remote": { "type": "http", "url": "https://example.com/mcp", "headers": { "X-Key": "k" } },
+                    "legacy": { "command": "no-type" },
+                    "sse": { "type": "sse", "url": "http://example.com/sse" },
+                    "relative": { "type": "http", "url": "/mcp" },
+                    "bad-header": { "type": "http", "url": "http://example.com", "headers": { "bad name": "v" } }
                 }
             }"#,
         );
 
         let servers = read_mcp_servers(&path).unwrap();
+        let parse = |name: &str| ServerConfig::deserialize(&servers[name]);
 
         assert!(matches!(
-            &servers["echo"],
-            ServerEntry::Supported(ServerConfig::Stdio { command }) if command == "echo-server"
+            parse("echo").unwrap(),
+            ServerConfig::Stdio { command, args, env }
+                if command == "echo-server" && args == ["-v"] && env["A"] == "1"
         ));
-        assert!(matches!(servers["remote"], ServerEntry::Unsupported(_)));
-        assert!(matches!(servers["legacy"], ServerEntry::Unsupported(_)));
+        assert!(matches!(
+            parse("remote").unwrap(),
+            ServerConfig::Http { url, headers }
+                if url == "https://example.com/mcp" && headers[&HeaderName::from_static("x-key")] == "k"
+        ));
+
+        for name in ["legacy", "sse", "relative", "bad-header"] {
+            assert!(parse(name).is_err(), "{name}");
+        }
+    }
+
+    #[test]
+    fn compares_hosts_like_whatwg_urls() {
+        let host_of = |url: &str| host(&url.parse().unwrap());
+
+        assert_eq!(
+            host_of("http://100.65.233.54:8790/mcp"),
+            "100.65.233.54:8790"
+        );
+        assert_eq!(host_of("ws://Hub:80/connect"), "hub");
+        assert_eq!(host_of("https://hub:443"), "hub");
+        assert_eq!(host_of("https://hub:80"), "hub:80");
     }
 
     #[test]
