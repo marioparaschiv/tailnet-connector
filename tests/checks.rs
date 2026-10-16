@@ -75,14 +75,16 @@ fn a_missing_checks_file_means_no_checks() {
 async fn unix_socket_checks_need_a_live_listener() {
     // Socket paths are limited to ~100 bytes, too short for the target dir.
     let path = std::env::temp_dir().join(format!("tailnet-check-{}.sock", std::process::id()));
-    let check: checks::Check = serde_json::from_value(json!({ "unixSocket": path })).unwrap();
+    let checks: checks::Checks =
+        serde_json::from_value(json!({ "vm": { "unixSocket": path } })).unwrap();
+    let available = || checks::available(["vm"].into_iter(), &checks);
 
     let listener = tokio::net::UnixListener::bind(&path).unwrap();
-    assert!(checks::passes(&check).await);
+    assert!(available().await.contains("vm"));
 
     drop(listener);
     assert!(path.exists(), "the stale socket file stays behind");
-    assert!(!checks::passes(&check).await);
+    assert!(available().await.is_empty());
 
     std::fs::remove_file(&path).unwrap();
 }
