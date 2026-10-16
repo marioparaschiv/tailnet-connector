@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use tailnet_connector::hub_server::hosts::Hosts;
 use tailnet_connector::hub_server::{self, HubState};
+use tailnet_connector::tailscale::StatusSource;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
@@ -24,6 +25,7 @@ async fn answers_unknown_paths_with_404() {
     let state = HubState {
         hosts: Hosts::default(),
         notify: Duration::from_secs(300),
+        status: StatusSource::Tailscale,
     };
     tokio::spawn(hub_server::serve(listener, state));
 
