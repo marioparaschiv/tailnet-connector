@@ -90,6 +90,11 @@ impl Services {
                     Ok(ServerConfig::Http { url, .. }) if config::host(&url) == config.hub_host => {
                         None
                     }
+                    Ok(ServerConfig::Stdio { command, .. })
+                        if config::runs_this_program(&command) =>
+                    {
+                        None
+                    }
                     Ok(server) => Some((name, server)),
                 });
 

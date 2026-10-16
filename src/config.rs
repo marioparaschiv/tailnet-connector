@@ -15,6 +15,8 @@ pub struct Config {
     pub url: String,
     /// The hub's WebSocket endpoint derived from `url`.
     pub connect_url: String,
+    /// The hub's MCP endpoint derived from `url`, which `agent` mode proxies.
+    pub mcp_url: String,
     /// The hub's host as compared against http MCP server URLs.
     pub hub_host: String,
     pub machine: String,
@@ -113,7 +115,7 @@ impl Config {
         };
 
         let url = var("TAILNET_URL")?.ok_or(ConfigError::Missing("TAILNET_URL"))?;
-        let (connect_url, hub_host) = Self::hub_urls(&url)?;
+        let (connect_url, mcp_url, hub_host) = Self::hub_urls(&url)?;
 
         let machine = match var("TAILNET_MACHINE")? {
             Some(machine) if machine.is_empty() => {
@@ -130,6 +132,7 @@ impl Config {
         Ok(Self {
             url,
             connect_url,
+            mcp_url,
             hub_host,
             machine,
             idle: Self::seconds("TAILNET_IDLE_SECONDS", var("TAILNET_IDLE_SECONDS")?, 300)?,
@@ -161,7 +164,7 @@ impl Config {
 
     // TLS is not compiled in, so https/wss hubs are rejected here rather than failing on every
     // connect.
-    fn hub_urls(url: &str) -> Result<(String, String), ConfigError> {
+    fn hub_urls(url: &str) -> Result<(String, String, String), ConfigError> {
         let not_a_url = || {
             Self::invalid(
                 "TAILNET_URL",
@@ -173,7 +176,11 @@ impl Config {
         let authority = uri.authority().ok_or_else(not_a_url)?;
 
         match uri.scheme_str() {
-            Some("http" | "ws") => Ok((format!("ws://{authority}/connect"), host(&uri))),
+            Some("http" | "ws") => Ok((
+                format!("ws://{authority}/connect"),
+                format!("http://{authority}/mcp"),
+                host(&uri),
+            )),
             _ => Err(not_a_url()),
         }
     }
@@ -259,6 +266,14 @@ pub fn host(uri: &Uri) -> String {
     }
 }
 
+/// Whether a stdio server's `command` starts this program, which as an agent's MCP server is the
+/// hub itself rather than a server of its own.
+pub fn runs_this_program(command: &str) -> bool {
+    Path::new(command)
+        .file_stem()
+        .is_some_and(|stem| stem == env!("CARGO_PKG_NAME"))
+}
+
 fn http_url<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Uri, D::Error> {
     let uri: Uri = String::deserialize(deserializer)?
         .parse()
@@ -310,6 +325,7 @@ mod tests {
         let home = env::home_dir().unwrap();
 
         assert_eq!(config.connect_url, "ws://100.65.233.54:8790/connect");
+        assert_eq!(config.mcp_url, "http://100.65.233.54:8790/mcp");
         assert_eq!(config.hub_host, "100.65.233.54:8790");
         assert_eq!(config.idle, Duration::from_secs(300));
         assert_eq!(config.check_interval, Duration::from_secs(10));
@@ -344,6 +360,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(config.connect_url, "ws://hub:1/connect");
+        assert_eq!(config.mcp_url, "http://hub:1/mcp");
         assert_eq!(config.machine, "laptop");
         assert_eq!(config.idle, Duration::from_secs(5));
         assert_eq!(config.claude_config, PathBuf::from("/tmp/claude.json"));
@@ -428,6 +445,15 @@ mod tests {
         assert_eq!(host_of("ws://Hub:80/connect"), "hub");
         assert_eq!(host_of("https://hub:443"), "hub");
         assert_eq!(host_of("https://hub:80"), "hub:80");
+    }
+
+    #[test]
+    fn recognizes_this_program_as_a_command() {
+        assert!(runs_this_program("tailnet-connector"));
+        assert!(runs_this_program("/usr/local/bin/tailnet-connector"));
+        assert!(runs_this_program("tailnet-connector.exe"));
+        assert!(!runs_this_program("npx"));
+        assert!(!runs_this_program("tailnet-connector-old"));
     }
 
     #[test]

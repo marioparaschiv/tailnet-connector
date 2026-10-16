@@ -16,7 +16,7 @@ pub struct Watcher {
 
 impl Watcher {
     pub fn new(path: PathBuf) -> Result<Self, ConfigError> {
-        let modified = Self::modified(&path);
+        let modified = modified(&path);
         let mcp_servers = config::read_mcp_servers(&path)?;
 
         Ok(Self {
@@ -36,7 +36,7 @@ impl Watcher {
 
     /// Returns the new `mcpServers` once the file was rewritten with a different value.
     pub fn changed(&mut self) -> Result<Option<&McpServers>, ConfigError> {
-        let modified = Self::modified(&self.path);
+        let modified = modified(&self.path);
 
         if modified == self.modified {
             return Ok(None);
@@ -53,9 +53,10 @@ impl Watcher {
 
         Ok(Some(&self.mcp_servers))
     }
-    fn modified(path: &Path) -> Option<SystemTime> {
-        std::fs::metadata(path)
-            .and_then(|metadata| metadata.modified())
-            .ok()
-    }
+}
+
+pub(crate) fn modified(path: &Path) -> Option<SystemTime> {
+    std::fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .ok()
 }
