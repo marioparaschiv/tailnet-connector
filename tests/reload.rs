@@ -85,3 +85,27 @@ async fn ignores_other_changes_and_keeps_serving_through_invalid_json() {
         ["added", "echo"]
     );
 }
+
+#[tokio::test(start_paused = true)]
+async fn registers_reloaded_servers_while_the_checks_file_is_malformed() {
+    let path = claude_config("reload-bad-checks.json", json!({ "echo": echo_entry() }));
+    let checks = temp_path("reload-bad-checks-checks.json");
+    write_json(&checks, &json!({}));
+    let hub = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let checks_var = checks.display().to_string();
+    start_connector(config(&hub, &path, &[("TAILNET_CHECKS", &checks_var)])).await;
+    let mut socket = accept(&hub).await;
+    assert_eq!(registered_names(&receive(&mut socket).await), ["echo"]);
+    let first = echo(&mut socket, 1, "echo").await;
+
+    std::fs::write(&checks, r#"{ "echo": "#).unwrap();
+    rewrite(
+        &path,
+        &claude_json(json!({ "echo": echo_entry(), "added": echo_entry() }), 1),
+        1,
+    );
+
+    // Only the names available before the reload stay registered until a check succeeds.
+    assert_eq!(registered_names(&receive(&mut socket).await), ["echo"]);
+    assert_ne!(echo(&mut socket, 2, "echo").await, first);
+}

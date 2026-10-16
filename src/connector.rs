@@ -120,10 +120,15 @@ impl Connector {
             services.names().collect::<Vec<_>>().join(", ")
         );
 
-        let available = self.check(&services).await?;
+        // The old services are already stopped, so the new ones go out even when the checks
+        // file can't be read, with the previously available names until a check succeeds.
+        let (available, checked) = match self.check(&services).await {
+            Ok(available) => (available, Ok(())),
+            Err(error) => (self.registration.borrow().available.clone(), Err(error)),
+        };
         self.publish(services, available).await;
 
-        Ok(())
+        checked
     }
 
     async fn check(&self, services: &Services) -> Result<BTreeSet<String>, ConfigError> {
