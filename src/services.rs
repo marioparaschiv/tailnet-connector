@@ -94,7 +94,7 @@ impl Services {
                 });
 
         let listed = join_all(configs.map(|(name, server)| async move {
-            let tools = list_tools(&server).await;
+            let tools = Self::list_tools(&server).await;
 
             (name, server, tools)
         }))
@@ -135,6 +135,14 @@ impl Services {
 
     pub async fn stop_all(&self) {
         join_all(self.servers.values().map(|server| server.stop())).await;
+    }
+
+    async fn list_tools(config: &ServerConfig) -> Result<Vec<Tool>, ClientError> {
+        let client = connect(config).await?;
+        let tools = client.list_all_tools().await;
+        client.cancel().await.map_err(ClientError::Stop)?;
+
+        tools.map_err(ClientError::Request)
     }
 }
 
@@ -283,12 +291,4 @@ fn program(command: &str) -> std::io::Result<Command> {
     command.creation_flags(CREATE_NO_WINDOW);
 
     Ok(command)
-}
-
-async fn list_tools(config: &ServerConfig) -> Result<Vec<Tool>, ClientError> {
-    let client = connect(config).await?;
-    let tools = client.list_all_tools().await;
-    client.cancel().await.map_err(ClientError::Stop)?;
-
-    tools.map_err(ClientError::Request)
 }
