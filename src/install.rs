@@ -192,28 +192,29 @@ pub fn uninstall(role: Role) -> Result<Outcome, InstallError> {
     }
 }
 
-/// Fails with the error the connector itself would give if `url` is not a usable `TAILNET_URL`.
+/// Fails with the error the connector itself would give when started with the service's
+/// environment.
 fn connector_ctx(
     url: &str,
     program: PathBuf,
     lookup: impl Fn(&str) -> Result<String, VarError>,
 ) -> Result<ServiceInstallCtx, InstallError> {
-    let lookup = |name: &str| match name {
-        "TAILNET_URL" => Ok(url.to_owned()),
-        _ => lookup(name),
-    };
-    Config::from_lookup(lookup).map_err(InstallError::Config)?;
-
     let path = lookup("PATH").map_err(InstallError::Path)?;
+    let environment = vec![
+        ("PATH".to_owned(), path),
+        ("TAILNET_URL".to_owned(), url.to_owned()),
+    ];
 
-    Ok(ctx(
-        Role::Connector,
-        program,
-        vec![
-            ("PATH".to_owned(), path),
-            ("TAILNET_URL".to_owned(), url.to_owned()),
-        ],
-    ))
+    Config::from_lookup(|name| {
+        environment
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.clone())
+            .ok_or(VarError::NotPresent)
+    })
+    .map_err(InstallError::Config)?;
+
+    Ok(ctx(Role::Connector, program, environment))
 }
 
 fn hub_ctx(
@@ -431,21 +432,20 @@ mod tests {
     }
 
     #[test]
-    fn connector_rejects_other_invalid_settings() {
+    fn connector_ignores_shell_settings_the_service_does_not_get() {
         let lookup = |name: &str| match name {
             "TAILNET_IDLE_SECONDS" => Ok("soon".to_owned()),
             _ => lookup(name),
         };
 
-        let error = connector_ctx("http://100.64.0.1:8790", program(), lookup).unwrap_err();
+        let ctx = connector_ctx("http://100.64.0.1:8790", program(), lookup).unwrap();
 
-        assert!(matches!(
-            error,
-            InstallError::Config(ConfigError::Invalid {
-                name: "TAILNET_IDLE_SECONDS",
-                ..
-            })
-        ));
+        assert!(
+            ctx.environment
+                .unwrap()
+                .iter()
+                .all(|(name, _)| name != "TAILNET_IDLE_SECONDS")
+        );
     }
 
     #[test]
