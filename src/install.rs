@@ -335,15 +335,17 @@ fn remove(manager: &dyn ServiceManager, role: Role) -> Result<bool, InstallError
         })
         .map_err(InstallError::step(Step::Status, role))?;
 
-    match status {
-        ServiceStatus::NotInstalled => return Ok(false),
-        ServiceStatus::Running => manager
-            .stop(ServiceStopCtx {
-                label: role.service_label(),
-            })
-            .map_err(InstallError::step(Step::Stop, role))?,
-        ServiceStatus::Stopped(_) => {}
+    if let ServiceStatus::NotInstalled = status {
+        return Ok(false);
     }
+
+    // systemd reports a unit waiting out its restart delay as stopped, and it would still restart
+    // after the uninstall.
+    manager
+        .stop(ServiceStopCtx {
+            label: role.service_label(),
+        })
+        .map_err(InstallError::step(Step::Stop, role))?;
 
     manager
         .uninstall(ServiceUninstallCtx {
