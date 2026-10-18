@@ -42,7 +42,19 @@ impl Role {
             Self::Hub => vec!["hub".into()],
         }
     }
+
+    #[cfg(target_os = "macos")]
+    fn log_file_name(self) -> &'static str {
+        match self {
+            Self::Connector => "connector.log",
+            Self::Hub => "hub.log",
+        }
+    }
 }
+
+/// Relative to the home directory.
+#[cfg(target_os = "macos")]
+const LOG_DIR: &str = "Library/Logs/tailnet-connector";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
@@ -61,6 +73,9 @@ impl fmt::Display for Outcome {
                 if cfg!(target_os = "linux") {
                     write!(f, "; read its logs with `journalctl --user -u {label}`")?;
                 }
+
+                #[cfg(target_os = "macos")]
+                write!(f, "; its logs are in ~/{LOG_DIR}/{}", role.log_file_name())?;
 
                 Ok(())
             }
@@ -96,6 +111,13 @@ pub enum InstallError {
     Config(ConfigError),
     Path(VarError),
     Program(io::Error),
+    #[cfg(target_os = "macos")]
+    Home(VarError),
+    #[cfg(target_os = "macos")]
+    LogDir {
+        path: PathBuf,
+        source: io::Error,
+    },
     Manager(io::Error),
     Step {
         step: Step,
@@ -116,6 +138,16 @@ impl fmt::Display for InstallError {
             Self::Config(error) => write!(f, "{error}"),
             Self::Path(error) => write!(f, "cannot read PATH: {error}"),
             Self::Program(error) => write!(f, "cannot locate this executable: {error}"),
+            #[cfg(target_os = "macos")]
+            Self::Home(error) => write!(f, "cannot read HOME: {error}"),
+            #[cfg(target_os = "macos")]
+            Self::LogDir { path, source } => {
+                write!(
+                    f,
+                    "cannot create the log directory {}: {source}",
+                    path.display()
+                )
+            }
             Self::Manager(error) => write!(f, "cannot use the user service manager: {error}"),
             Self::Step { step, role, source } => {
                 write!(f, "cannot {step} {}: {source}", role.label())
@@ -129,6 +161,10 @@ impl std::error::Error for InstallError {
         match self {
             Self::Config(error) => Some(error),
             Self::Path(error) => Some(error),
+            #[cfg(target_os = "macos")]
+            Self::Home(error) => Some(error),
+            #[cfg(target_os = "macos")]
+            Self::LogDir { source, .. } => Some(source),
             Self::Program(error) | Self::Manager(error) | Self::Step { source: error, .. } => {
                 Some(error)
             }
@@ -218,7 +254,64 @@ fn manager() -> Result<Box<dyn ServiceManager>, InstallError> {
     Ok(manager)
 }
 
+/// service-manager's own plist has no `StandardOutPath` or `StandardErrorPath`, so the output
+/// would be lost.
+#[cfg(target_os = "macos")]
+fn with_log_file(role: Role, ctx: ServiceInstallCtx) -> Result<ServiceInstallCtx, InstallError> {
+    let home = env::var("HOME").map_err(InstallError::Home)?;
+    let dir = PathBuf::from(home).join(LOG_DIR);
+    std::fs::create_dir_all(&dir).map_err(|source| InstallError::LogDir {
+        path: dir.clone(),
+        source,
+    })?;
+
+    let contents = launchd_plist(&ctx, &dir.join(role.log_file_name()));
+
+    Ok(ServiceInstallCtx {
+        contents: Some(contents),
+        ..ctx
+    })
+}
+
+/// Without `Disabled`, so that service-manager's `start` runs a plain `launchctl start`.
+#[cfg(target_os = "macos")]
+fn launchd_plist(ctx: &ServiceInstallCtx, log_file: &std::path::Path) -> String {
+    use plist::{Dictionary, Value};
+
+    let string = |value: &std::ffi::OsStr| Value::String(value.to_string_lossy().into_owned());
+    let log_file = string(log_file.as_os_str());
+    let environment = ctx
+        .environment
+        .iter()
+        .flatten()
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect::<Dictionary>();
+
+    let plist = Value::Dictionary(Dictionary::from_iter([
+        ("Label", Value::String(ctx.label.to_qualified_name())),
+        (
+            "ProgramArguments",
+            Value::Array(ctx.cmd_iter().map(string).collect()),
+        ),
+        ("EnvironmentVariables", Value::Dictionary(environment)),
+        ("RunAtLoad", Value::Boolean(true)),
+        ("KeepAlive", Value::Boolean(true)),
+        ("StandardOutPath", log_file.clone()),
+        ("StandardErrorPath", log_file),
+    ]));
+
+    let mut xml = Vec::new();
+    plist
+        .to_writer_xml(&mut xml)
+        .expect("a plist of strings and booleans serializes");
+
+    String::from_utf8(xml).expect("plist XML is UTF-8")
+}
+
 fn install(role: Role, ctx: ServiceInstallCtx) -> Result<Outcome, InstallError> {
+    #[cfg(target_os = "macos")]
+    let ctx = with_log_file(role, ctx)?;
+
     let manager = manager()?;
     remove(&*manager, role)?;
 
@@ -399,6 +492,72 @@ mod tests {
         assert_eq!(
             Outcome::Installed(Role::Hub).to_string(),
             "installed tailnet-connector-hub as a user service; read its logs with `journalctl --user -u tailnet-connector-hub`"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn installed_outcome_says_where_the_logs_are() {
+        assert_eq!(
+            Outcome::Installed(Role::Hub).to_string(),
+            "installed tailnet-connector-hub as a user service; its logs are in ~/Library/Logs/tailnet-connector/hub.log"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn launchd_plist_runs_the_service_and_writes_its_output_to_the_log_file() {
+        let ctx = connector_ctx("http://100.64.0.1:8790", program(), lookup).unwrap();
+        let log_file = PathBuf::from("/Users/user/Library/Logs/tailnet-connector/connector.log");
+
+        let xml = launchd_plist(&ctx, &log_file);
+        let plist = plist::Value::from_reader_xml(xml.as_bytes()).unwrap();
+
+        let expected = plist::Value::Dictionary(plist::Dictionary::from_iter([
+            ("Label", plist::Value::from("tailnet-connector")),
+            (
+                "ProgramArguments",
+                plist::Value::Array(vec!["/opt/tailnet/tailnet-connector".into()]),
+            ),
+            (
+                "EnvironmentVariables",
+                plist::Value::Dictionary(plist::Dictionary::from_iter([
+                    ("PATH", "/usr/local/bin:/usr/bin"),
+                    ("TAILNET_URL", "http://100.64.0.1:8790"),
+                ])),
+            ),
+            ("RunAtLoad", true.into()),
+            ("KeepAlive", true.into()),
+            (
+                "StandardOutPath",
+                "/Users/user/Library/Logs/tailnet-connector/connector.log".into(),
+            ),
+            (
+                "StandardErrorPath",
+                "/Users/user/Library/Logs/tailnet-connector/connector.log".into(),
+            ),
+        ]));
+        assert_eq!(plist, expected);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn launchd_plist_passes_the_hub_command() {
+        let ctx = hub_ctx(program(), lookup).unwrap();
+        let log_file = PathBuf::from("/Users/user/Library/Logs/tailnet-connector/hub.log");
+
+        let xml = launchd_plist(&ctx, &log_file);
+        let plist = plist::Value::from_reader_xml(xml.as_bytes()).unwrap();
+        let plist = plist.as_dictionary().unwrap();
+
+        assert_eq!(plist["Label"], "tailnet-connector-hub".into());
+        assert_eq!(
+            plist["ProgramArguments"],
+            plist::Value::Array(vec!["/opt/tailnet/tailnet-connector".into(), "hub".into()])
+        );
+        assert_eq!(
+            plist["StandardErrorPath"],
+            "/Users/user/Library/Logs/tailnet-connector/hub.log".into()
         );
     }
 }

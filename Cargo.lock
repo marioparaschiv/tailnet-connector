@@ -1825,6 +1825,7 @@ dependencies = [
  "axum",
  "futures-util",
  "gethostname",
+ "plist",
  "rmcp",
  "serde",
  "serde_json",

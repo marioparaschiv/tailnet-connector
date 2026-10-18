@@ -21,6 +21,9 @@ rmcp = { version = "3.5.1", default-features = false, features = ["which-command
 [target.'cfg(not(windows))'.dependencies]
 service-manager = "0.11.0"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+plist = "1.10.1"
+
 [dev-dependencies]
 rmcp = { version = "3.5.1", features = ["server", "macros", "transport-io", "schemars"] }
 tokio = { version = "1.53.3", features = ["test-util"] }
