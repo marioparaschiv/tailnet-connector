@@ -105,6 +105,25 @@ To share a server only while a dependency accepts connections, create `~/.config
 - A check passes when the connection is accepted within one second. Checks run every ten seconds.
 - A server without a check is always shared.
 
+### Running as a background service
+
+On Linux, the binary can install the connector or the hub as a systemd user service of the user who runs the command. The service starts at login and restarts a minute after it exits.
+
+The service runs the binary from where it is when you install it, so first place the binary somewhere permanent.
+
+```sh
+tailnet-connector install --url http://100.x.y.z:8790   # the connector
+tailnet-connector install hub                           # the hub
+```
+
+The service keeps the `PATH` of the shell that ran `install`, and the connector also gets `TAILNET_URL` from `--url`. Running `install` again replaces the service. Read the logs with `journalctl --user -u tailnet-connector` or `journalctl --user -u tailnet-connector-hub`.
+
+A user service runs only while you are logged in, unless lingering is enabled. To keep the hub running when you are logged out, run `loginctl enable-linger`.
+
+To remove a service, run `tailnet-connector uninstall` for the connector or `tailnet-connector uninstall hub` for the hub.
+
+On Windows, use the scripts described in [Windows installation](#windows-installation).
+
 ### Windows installation
 
 The Windows executable is cross-compiled on Linux.
@@ -162,4 +181,5 @@ The Windows lint step requires the cross-compiler described in [Windows installa
 | `src/hub_server/`                      | The hub: `/connect` for connectors, `/mcp` for agents, and the tool catalog |
 | `src/agent.rs`, `src/known_servers.rs` | The agent proxy and duplicate filtering                                     |
 | `src/checks.rs`                        | Availability checks                                                         |
+| `src/install.rs`                       | `install` and `uninstall`: the background service on Linux                  |
 | `examples/echo-server.rs`              | A minimal MCP server used by the test suite                                 |
