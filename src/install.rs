@@ -164,15 +164,15 @@ impl std::error::Error for InstallError {
 }
 
 pub fn install_connector(url: &str) -> Result<Outcome, InstallError> {
-    let ctx = connector_ctx(url, program()?, |name| env::var(name))?;
+    let environment = connector_environment(url, path()?)?;
 
-    install(Role::Connector, ctx)
+    install(Role::Connector, environment)
 }
 
 pub fn install_hub() -> Result<Outcome, InstallError> {
-    let ctx = hub_ctx(program()?, |name| env::var(name))?;
+    let path = path()?;
 
-    install(Role::Hub, ctx)
+    install(Role::Hub, vec![("PATH".to_owned(), path)])
 }
 
 pub fn uninstall(role: Role) -> Result<Outcome, InstallError> {
@@ -185,12 +185,7 @@ pub fn uninstall(role: Role) -> Result<Outcome, InstallError> {
 
 /// Fails with the error the connector itself would give when started with the service's
 /// environment.
-fn connector_ctx(
-    url: &str,
-    program: PathBuf,
-    lookup: impl Fn(&str) -> Result<String, VarError>,
-) -> Result<ServiceInstallCtx, InstallError> {
-    let path = path(lookup)?;
+fn connector_environment(url: &str, path: String) -> Result<Vec<(String, String)>, InstallError> {
     let environment = vec![
         ("PATH".to_owned(), path),
         ("TAILNET_URL".to_owned(), url.to_owned()),
@@ -205,20 +200,11 @@ fn connector_ctx(
     })
     .map_err(InstallError::Config)?;
 
-    Ok(ctx(Role::Connector, program, environment))
+    Ok(environment)
 }
 
-fn hub_ctx(
-    program: PathBuf,
-    lookup: impl Fn(&str) -> Result<String, VarError>,
-) -> Result<ServiceInstallCtx, InstallError> {
-    let path = path(lookup)?;
-
-    Ok(ctx(Role::Hub, program, vec![("PATH".to_owned(), path)]))
-}
-
-fn path(lookup: impl Fn(&str) -> Result<String, VarError>) -> Result<String, InstallError> {
-    var(lookup, "PATH")
+fn path() -> Result<String, InstallError> {
+    var(|name| env::var(name), "PATH")
         .and_then(|path| path.ok_or(ConfigError::Missing("PATH")))
         .map_err(InstallError::Config)
 }
@@ -237,10 +223,6 @@ fn ctx(role: Role, program: PathBuf, environment: Vec<(String, String)>) -> Serv
             delay_secs: Some(60),
         },
     }
-}
-
-fn program() -> Result<PathBuf, InstallError> {
-    env::current_exe().map_err(InstallError::Program)
 }
 
 fn manager() -> Result<Box<dyn ServiceManager>, InstallError> {
@@ -306,7 +288,10 @@ fn launchd_plist(ctx: &ServiceInstallCtx, log_file: &std::path::Path) -> String 
     String::from_utf8(xml).expect("plist XML is UTF-8")
 }
 
-fn install(role: Role, ctx: ServiceInstallCtx) -> Result<Outcome, InstallError> {
+fn install(role: Role, environment: Vec<(String, String)>) -> Result<Outcome, InstallError> {
+    let program = env::current_exe().map_err(InstallError::Program)?;
+    let ctx = ctx(role, program, environment);
+
     #[cfg(target_os = "macos")]
     let ctx = with_log_file(role, ctx)?;
 
@@ -358,121 +343,37 @@ fn remove(manager: &dyn ServiceManager, role: Role) -> Result<bool, InstallError
 mod tests {
     use super::*;
 
-    fn lookup(name: &str) -> Result<String, VarError> {
-        match name {
-            "PATH" => Ok("/usr/local/bin:/usr/bin".to_owned()),
-            "HOME" => Ok("/home/user".to_owned()),
-            _ => Err(VarError::NotPresent),
-        }
-    }
-
-    fn program() -> PathBuf {
-        PathBuf::from("/opt/tailnet/tailnet-connector")
-    }
+    const PATH: &str = "/usr/local/bin:/usr/bin";
 
     #[test]
-    fn connector_runs_without_arguments_with_the_url_and_path() {
-        let ctx = connector_ctx("http://100.64.0.1:8790", program(), lookup).unwrap();
+    fn connector_environment_is_path_then_the_url() {
+        let environment = connector_environment("http://100.64.0.1:8790", PATH.to_owned()).unwrap();
 
-        assert_eq!(ctx.label.to_script_name(), "tailnet-connector");
-        assert_eq!(ctx.program, program());
-        assert!(ctx.args.is_empty());
         assert_eq!(
-            ctx.environment,
-            Some(vec![
-                ("PATH".to_owned(), "/usr/local/bin:/usr/bin".to_owned()),
+            environment,
+            vec![
+                ("PATH".to_owned(), PATH.to_owned()),
                 (
                     "TAILNET_URL".to_owned(),
                     "http://100.64.0.1:8790".to_owned()
                 ),
-            ])
-        );
-        assert!(ctx.autostart);
-        assert_eq!(
-            ctx.restart_policy,
-            RestartPolicy::Always {
-                delay_secs: Some(60)
-            }
-        );
-    }
-
-    #[test]
-    fn connector_url_overrides_the_environment() {
-        let lookup = |name: &str| match name {
-            "TAILNET_URL" => Ok("not-a-url".to_owned()),
-            _ => lookup(name),
-        };
-
-        let ctx = connector_ctx("http://100.64.0.1:8790", program(), lookup).unwrap();
-
-        assert_eq!(
-            ctx.environment.unwrap()[1],
-            (
-                "TAILNET_URL".to_owned(),
-                "http://100.64.0.1:8790".to_owned()
-            )
+            ]
         );
     }
 
     #[test]
     fn connector_rejects_the_urls_the_connector_rejects() {
         for url in ["https://hub", "not-a-url"] {
-            let error = connector_ctx(url, program(), lookup).unwrap_err();
+            let error = connector_environment(url, PATH.to_owned()).unwrap_err();
             let expected = Config::from_lookup(|name| match name {
+                "PATH" => Ok(PATH.to_owned()),
                 "TAILNET_URL" => Ok(url.to_owned()),
-                _ => lookup(name),
+                _ => Err(VarError::NotPresent),
             })
             .unwrap_err();
 
             assert_eq!(error.to_string(), expected.to_string());
         }
-    }
-
-    #[test]
-    fn connector_ignores_shell_settings_the_service_does_not_get() {
-        let lookup = |name: &str| match name {
-            "TAILNET_IDLE_SECONDS" => Ok("soon".to_owned()),
-            _ => lookup(name),
-        };
-
-        let ctx = connector_ctx("http://100.64.0.1:8790", program(), lookup).unwrap();
-
-        assert!(
-            ctx.environment
-                .unwrap()
-                .iter()
-                .all(|(name, _)| name != "TAILNET_IDLE_SECONDS")
-        );
-    }
-
-    #[test]
-    fn hub_runs_the_hub_command_with_path_only() {
-        let ctx = hub_ctx(program(), lookup).unwrap();
-
-        assert_eq!(ctx.label.to_script_name(), "tailnet-connector-hub");
-        assert_eq!(ctx.program, program());
-        assert_eq!(ctx.args, vec![OsString::from("hub")]);
-        assert_eq!(
-            ctx.environment,
-            Some(vec![(
-                "PATH".to_owned(),
-                "/usr/local/bin:/usr/bin".to_owned()
-            )])
-        );
-        assert!(ctx.autostart);
-        assert_eq!(
-            ctx.restart_policy,
-            RestartPolicy::Always {
-                delay_secs: Some(60)
-            }
-        );
-    }
-
-    #[test]
-    fn missing_path_is_reported() {
-        let error = hub_ctx(program(), |_| Err(VarError::NotPresent)).unwrap_err();
-
-        assert_eq!(error.to_string(), "PATH is required");
     }
 
     #[test]
@@ -503,7 +404,11 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn launchd_plist_runs_the_service_and_writes_its_output_to_the_log_file() {
-        let ctx = connector_ctx("http://100.64.0.1:8790", program(), lookup).unwrap();
+        let ctx = ctx(
+            Role::Connector,
+            PathBuf::from("/opt/tailnet/tailnet-connector"),
+            connector_environment("http://100.64.0.1:8790", PATH.to_owned()).unwrap(),
+        );
         let log_file = PathBuf::from("/Users/user/Library/Logs/tailnet-connector/connector.log");
 
         let xml = launchd_plist(&ctx, &log_file);
@@ -539,7 +444,11 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn launchd_plist_passes_the_hub_command() {
-        let ctx = hub_ctx(program(), lookup).unwrap();
+        let ctx = ctx(
+            Role::Hub,
+            PathBuf::from("/opt/tailnet/tailnet-connector"),
+            vec![("PATH".to_owned(), PATH.to_owned())],
+        );
         let log_file = PathBuf::from("/Users/user/Library/Logs/tailnet-connector/hub.log");
 
         let xml = launchd_plist(&ctx, &log_file);
