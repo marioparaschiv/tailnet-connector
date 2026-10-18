@@ -12,7 +12,7 @@ use service_manager::{
     ServiceStatus, ServiceStatusCtx, ServiceStopCtx, ServiceUninstallCtx,
 };
 
-use crate::config::{Config, ConfigError};
+use crate::config::{Config, ConfigError, var};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
@@ -109,10 +109,7 @@ impl fmt::Display for Step {
 #[derive(Debug)]
 pub enum InstallError {
     Config(ConfigError),
-    Path(VarError),
     Program(io::Error),
-    #[cfg(target_os = "macos")]
-    Home(VarError),
     #[cfg(target_os = "macos")]
     LogDir {
         path: PathBuf,
@@ -136,10 +133,7 @@ impl fmt::Display for InstallError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Config(error) => write!(f, "{error}"),
-            Self::Path(error) => write!(f, "cannot read PATH: {error}"),
             Self::Program(error) => write!(f, "cannot locate this executable: {error}"),
-            #[cfg(target_os = "macos")]
-            Self::Home(error) => write!(f, "cannot read HOME: {error}"),
             #[cfg(target_os = "macos")]
             Self::LogDir { path, source } => {
                 write!(
@@ -160,9 +154,6 @@ impl std::error::Error for InstallError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Config(error) => Some(error),
-            Self::Path(error) => Some(error),
-            #[cfg(target_os = "macos")]
-            Self::Home(error) => Some(error),
             #[cfg(target_os = "macos")]
             Self::LogDir { source, .. } => Some(source),
             Self::Program(error) | Self::Manager(error) | Self::Step { source: error, .. } => {
@@ -199,7 +190,7 @@ fn connector_ctx(
     program: PathBuf,
     lookup: impl Fn(&str) -> Result<String, VarError>,
 ) -> Result<ServiceInstallCtx, InstallError> {
-    let path = lookup("PATH").map_err(InstallError::Path)?;
+    let path = path(lookup)?;
     let environment = vec![
         ("PATH".to_owned(), path),
         ("TAILNET_URL".to_owned(), url.to_owned()),
@@ -221,9 +212,15 @@ fn hub_ctx(
     program: PathBuf,
     lookup: impl Fn(&str) -> Result<String, VarError>,
 ) -> Result<ServiceInstallCtx, InstallError> {
-    let path = lookup("PATH").map_err(InstallError::Path)?;
+    let path = path(lookup)?;
 
     Ok(ctx(Role::Hub, program, vec![("PATH".to_owned(), path)]))
+}
+
+fn path(lookup: impl Fn(&str) -> Result<String, VarError>) -> Result<String, InstallError> {
+    var(lookup, "PATH")
+        .and_then(|path| path.ok_or(ConfigError::Missing("PATH")))
+        .map_err(InstallError::Config)
 }
 
 fn ctx(role: Role, program: PathBuf, environment: Vec<(String, String)>) -> ServiceInstallCtx {
@@ -259,8 +256,8 @@ fn manager() -> Result<Box<dyn ServiceManager>, InstallError> {
 /// would be lost.
 #[cfg(target_os = "macos")]
 fn with_log_file(role: Role, ctx: ServiceInstallCtx) -> Result<ServiceInstallCtx, InstallError> {
-    let home = env::var("HOME").map_err(InstallError::Home)?;
-    let dir = PathBuf::from(home).join(LOG_DIR);
+    let home = env::home_dir().ok_or(InstallError::Config(ConfigError::NoHomeDir("HOME")))?;
+    let dir = home.join(LOG_DIR);
     std::fs::create_dir_all(&dir).map_err(|source| InstallError::LogDir {
         path: dir.clone(),
         source,
@@ -475,10 +472,7 @@ mod tests {
     fn missing_path_is_reported() {
         let error = hub_ctx(program(), |_| Err(VarError::NotPresent)).unwrap_err();
 
-        assert_eq!(
-            error.to_string(),
-            "cannot read PATH: environment variable not found"
-        );
+        assert_eq!(error.to_string(), "PATH is required");
     }
 
     #[test]
