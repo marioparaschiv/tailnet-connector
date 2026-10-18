@@ -1,6 +1,6 @@
 # Tailnet Connector
 
-tailnet-connector makes the MCP servers configured on each of your machines available to Claude Code agents on any other machine in your Tailscale network.
+Tailnet Connector makes the MCP servers configured on each of your machines available to Claude Code agents on any other machine in your Tailscale network.
 
 For example, if a laptop runs a browser automation server and a desktop runs a database server, an agent on either machine, or on a third one, can call the tools of both.
 
@@ -124,23 +124,23 @@ All configuration is read from environment variables. `TAILNET_URL` is the only 
 
 ### Connector and agent proxy
 
-| Variable | Default | Description |
-| --- | --- | --- |
-| `TAILNET_URL` | None | The hub URL. Only `http://` and `ws://` are accepted, because TLS is not supported. |
-| `TAILNET_MACHINE` | The hostname in lowercase, without a `.local` suffix | The machine name used in tool names. |
-| `TAILNET_IDLE_SECONDS` | `300` | Seconds without calls before a server is stopped. |
-| `CLAUDE_CONFIG` | `~/.claude.json` | The file from which `mcpServers` is read. |
-| `TAILNET_CHECKS` | `~/.config/tailnet/checks.json` | The file from which availability checks are read. |
-| `TAILNET_CHECK_SECONDS` | `10` | The interval between availability checks. |
-| `TAILNET_LOG` | None | Windows only. The log file path, since the executable has no console. |
+| Variable                | Default                                              | Description                                                                         |
+| ----------------------- | ---------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `TAILNET_URL`           | None                                                 | The hub URL. Only `http://` and `ws://` are accepted, because TLS is not supported. |
+| `TAILNET_MACHINE`       | The hostname in lowercase, without a `.local` suffix | The machine name used in tool names.                                                |
+| `TAILNET_IDLE_SECONDS`  | `300`                                                | Seconds without calls before a server is stopped.                                   |
+| `CLAUDE_CONFIG`         | `~/.claude.json`                                     | The file from which `mcpServers` is read.                                           |
+| `TAILNET_CHECKS`        | `~/.config/tailnet/checks.json`                      | The file from which availability checks are read.                                   |
+| `TAILNET_CHECK_SECONDS` | `10`                                                 | The interval between availability checks.                                           |
+| `TAILNET_LOG`           | None                                                 | Windows only. The log file path, since the executable has no console.               |
 
 ### Hub
 
-| Variable | Default | Description |
-| --- | --- | --- |
-| `TAILNET_MCP_HOST` | The output of `tailscale ip -4` | The address the hub listens on. |
-| `TAILNET_MCP_PORT` | `8790` | The port the hub listens on. |
-| `TAILNET_MCP_NOTIFY_SECONDS` | `300` | The interval at which agents are notified of tool changes. The minimum is `5`. |
+| Variable                     | Default                         | Description                                                                    |
+| ---------------------------- | ------------------------------- | ------------------------------------------------------------------------------ |
+| `TAILNET_MCP_HOST`           | The output of `tailscale ip -4` | The address the hub listens on.                                                |
+| `TAILNET_MCP_PORT`           | `8790`                          | The port the hub listens on.                                                   |
+| `TAILNET_MCP_NOTIFY_SECONDS` | `300`                           | The interval at which agents are notified of tool changes. The minimum is `5`. |
 
 ## Development
 
@@ -155,11 +155,11 @@ cargo test
 
 The Windows lint step requires the cross-compiler described in [Windows installation](#windows-installation).
 
-| Path | Contents |
-| --- | --- |
-| `src/main.rs` | Selects the hub, connector, or agent role |
-| `src/connector.rs`, `src/services.rs` | The connector: registration and server lifecycle |
-| `src/hub_server/` | The hub: `/connect` for connectors, `/mcp` for agents, and the tool catalog |
-| `src/agent.rs`, `src/known_servers.rs` | The agent proxy and duplicate filtering |
-| `src/checks.rs` | Availability checks |
-| `examples/echo-server.rs` | A minimal MCP server used by the test suite |
+| Path                                   | Contents                                                                    |
+| -------------------------------------- | --------------------------------------------------------------------------- |
+| `src/main.rs`                          | Selects the hub, connector, or agent role                                   |
+| `src/connector.rs`, `src/services.rs`  | The connector: registration and server lifecycle                            |
+| `src/hub_server/`                      | The hub: `/connect` for connectors, `/mcp` for agents, and the tool catalog |
+| `src/agent.rs`, `src/known_servers.rs` | The agent proxy and duplicate filtering                                     |
+| `src/checks.rs`                        | Availability checks                                                         |
+| `examples/echo-server.rs`              | A minimal MCP server used by the test suite                                 |
