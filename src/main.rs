@@ -10,32 +10,35 @@ use tailnet_connector::connector::Connector;
 use tailnet_connector::hub_server::config::HubConfig;
 use tailnet_connector::hub_server::hosts::Hosts;
 use tailnet_connector::hub_server::{self, HubState};
-#[cfg(not(windows))]
 use tailnet_connector::install::{self, Role};
 use tailnet_connector::tailscale::Status;
 use tokio::net::TcpListener;
+#[cfg(windows)]
+use windows::Win32::Foundation::ERROR_INVALID_HANDLE;
+#[cfg(windows)]
+use windows::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
 
 #[cfg(not(windows))]
 const COMMANDS: &str = "run without arguments to connect this machine's MCP servers, with `agent` to serve an agent over stdio, with `hub` to run the hub, with `install --url <hub url>` or `install hub` to run the connector or the hub as a background service, or with `uninstall` or `uninstall hub` to remove that service";
 #[cfg(windows)]
-const COMMANDS: &str = "run without arguments to connect this machine's MCP servers, with `agent` to serve an agent over stdio, or with `hub` to run the hub";
+const COMMANDS: &str = "run without arguments to connect this machine's MCP servers, with `agent` to serve an agent over stdio, with `hub` to run the hub, with `install --url <hub url>` to run the connector as a background service, or with `uninstall` to remove that service";
 
 #[cfg(not(windows))]
 const INSTALL_USAGE: &str =
     "usage: tailnet-connector install --url <hub url> | install hub | uninstall | uninstall hub";
+#[cfg(windows)]
+const INSTALL_USAGE: &str = "usage: tailnet-connector install --url <hub url> | uninstall";
 
 #[derive(Debug, PartialEq, Eq)]
 enum Mode {
     Connector,
     Agent,
     Hub,
-    #[cfg(not(windows))]
     InstallConnector {
         url: String,
     },
     #[cfg(not(windows))]
     InstallHub,
-    #[cfg(not(windows))]
     Uninstall(Role),
 }
 
@@ -44,17 +47,14 @@ fn parse(args: &[&str]) -> Result<Mode, String> {
         [] => Ok(Mode::Connector),
         ["agent", ..] => Ok(Mode::Agent),
         ["hub", ..] => Ok(Mode::Hub),
-        #[cfg(not(windows))]
         ["install", "--url", url] => Ok(Mode::InstallConnector {
             url: (*url).to_owned(),
         }),
         #[cfg(not(windows))]
         ["install", "hub"] => Ok(Mode::InstallHub),
-        #[cfg(not(windows))]
         ["uninstall"] => Ok(Mode::Uninstall(Role::Connector)),
         #[cfg(not(windows))]
         ["uninstall", "hub"] => Ok(Mode::Uninstall(Role::Hub)),
-        #[cfg(not(windows))]
         ["install" | "uninstall", ..] => Err(INSTALL_USAGE.to_owned()),
         [other, ..] => Err(format!("unknown command {other:?}: {COMMANDS}")),
     }
@@ -64,7 +64,17 @@ fn parse(args: &[&str]) -> Result<Mode, String> {
 async fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
-    let mode = match parse(&args) {
+    let parsed = parse(&args);
+
+    // Nothing can be reported without an output, so the exit code is all there is.
+    #[cfg(windows)]
+    if let Err(_) | Ok(Mode::InstallConnector { .. } | Mode::Uninstall(_)) = parsed
+        && attach_console().is_err()
+    {
+        return ExitCode::FAILURE;
+    }
+
+    let mode = match parsed {
         Ok(mode) => mode,
         Err(usage) => {
             eprintln!("{usage}");
@@ -76,11 +86,9 @@ async fn main() -> ExitCode {
     match &mode {
         Mode::Connector | Mode::Agent => {}
         Mode::Hub => return run_hub().await,
-        #[cfg(not(windows))]
         Mode::InstallConnector { url } => return report(install::install_connector(url)),
         #[cfg(not(windows))]
         Mode::InstallHub => return report(install::install_hub()),
-        #[cfg(not(windows))]
         Mode::Uninstall(role) => return report(install::uninstall(*role)),
     }
 
@@ -117,7 +125,17 @@ async fn main() -> ExitCode {
     }
 }
 
-#[cfg(not(windows))]
+/// Sends the output to the console of the terminal that ran the command, since a
+/// windows-subsystem exe has none of its own. Without a parent console the output is lost.
+#[cfg(windows)]
+fn attach_console() -> windows::core::Result<()> {
+    // SAFETY: called before anything is written to stdout or stderr.
+    match unsafe { AttachConsole(ATTACH_PARENT_PROCESS) } {
+        Err(error) if error.code() == ERROR_INVALID_HANDLE.to_hresult() => Ok(()),
+        result => result,
+    }
+}
+
 fn report(result: Result<install::Outcome, install::InstallError>) -> ExitCode {
     match result {
         Ok(outcome) => {
@@ -211,21 +229,31 @@ mod tests {
         );
     }
 
-    #[cfg(not(windows))]
     #[test]
-    fn parses_install_and_uninstall() {
+    fn parses_install_and_uninstall_of_the_connector() {
         assert_eq!(
             parse(&["install", "--url", "http://100.64.0.1:8790"]),
             Ok(Mode::InstallConnector {
                 url: "http://100.64.0.1:8790".to_owned()
             })
         );
-        assert_eq!(parse(&["install", "hub"]), Ok(Mode::InstallHub));
         assert_eq!(parse(&["uninstall"]), Ok(Mode::Uninstall(Role::Connector)));
-        assert_eq!(parse(&["uninstall", "hub"]), Ok(Mode::Uninstall(Role::Hub)));
     }
 
     #[cfg(not(windows))]
+    #[test]
+    fn parses_install_and_uninstall_of_the_hub() {
+        assert_eq!(parse(&["install", "hub"]), Ok(Mode::InstallHub));
+        assert_eq!(parse(&["uninstall", "hub"]), Ok(Mode::Uninstall(Role::Hub)));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rejects_install_and_uninstall_of_the_hub() {
+        assert_eq!(parse(&["install", "hub"]), Err(INSTALL_USAGE.to_owned()));
+        assert_eq!(parse(&["uninstall", "hub"]), Err(INSTALL_USAGE.to_owned()));
+    }
+
     #[test]
     fn rejects_malformed_install_and_uninstall() {
         for args in [

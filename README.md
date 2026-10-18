@@ -107,7 +107,7 @@ To share a server only while a dependency accepts connections, create `~/.config
 
 ### Running as a background service
 
-On Linux and macOS, the binary can install the connector or the hub as a background service of the user who runs the command: a systemd user service on Linux, a LaunchAgent on macOS. The service starts at login and restarts after it exits, a minute later on Linux.
+The binary can install the connector or the hub as a background service of the user who runs the command: a systemd user service on Linux, a LaunchAgent on macOS. On Windows, only the connector installs, as a scheduled task. The service starts at login and restarts after it exits, a minute later on Linux and Windows.
 
 The service runs the binary from where it is when you install it, so first place the binary somewhere permanent.
 
@@ -124,7 +124,7 @@ On Linux, a user service runs only while you are logged in, unless lingering is 
 
 To remove a service, run `tailnet-connector uninstall` for the connector or `tailnet-connector uninstall hub` for the hub.
 
-On Windows, use the scripts described in [Windows installation](#windows-installation).
+On Windows, see [Windows installation](#windows-installation).
 
 ### Windows installation
 
@@ -132,12 +132,14 @@ The Windows executable is cross-compiled on Linux.
 
 1. Install the cross-compiler on Linux: `sudo apt-get install -y gcc-mingw-w64-x86-64`
 2. Build the executable: `cargo build --release --target x86_64-pc-windows-gnu`
-3. Copy `target/x86_64-pc-windows-gnu/release/tailnet-connector.exe` and the contents of `scripts/` into a single folder on the Windows machine.
-4. From that folder, run: `powershell -ExecutionPolicy Bypass -File install.ps1 -TailnetUrl http://100.x.y.z:8790`
+3. Copy `target/x86_64-pc-windows-gnu/release/tailnet-connector.exe` to a permanent folder on the Windows machine, since the task runs it from there.
+4. From that folder, run: `start /wait tailnet-connector install --url http://100.x.y.z:8790` in cmd, or `Start-Process -Wait .\tailnet-connector -ArgumentList 'install','--url','http://100.x.y.z:8790'` in PowerShell.
 
-The installer registers a scheduled task that starts the connector in the background at each sign-in and restarts it after a crash. The connector writes its log to `%LOCALAPPDATA%\tailnet-connector\connector.log`.
+The executable has no console of its own, so without `start /wait` or `Start-Process -Wait` the prompt returns before the output appears.
 
-To uninstall, run `powershell -ExecutionPolicy Bypass -File uninstall.ps1`.
+`install` registers a scheduled task that starts the connector in the background at each sign-in and restarts it a minute after a crash. The task runs with your user environment, so `install` also sets the user environment variables `TAILNET_URL` and `TAILNET_LOG`. The connector writes its log to `%LOCALAPPDATA%\tailnet-connector\connector.log`.
+
+To uninstall, run `start /wait tailnet-connector uninstall`, which removes the task and the two variables.
 
 ## Environment variables
 
@@ -183,5 +185,5 @@ The Windows lint step requires the cross-compiler described in [Windows installa
 | `src/hub_server/`                      | The hub: `/connect` for connectors, `/mcp` for agents, and the tool catalog |
 | `src/agent.rs`, `src/known_servers.rs` | The agent proxy and duplicate filtering                                     |
 | `src/checks.rs`                        | Availability checks                                                         |
-| `src/install.rs`                       | `install` and `uninstall`: the background service on Linux and macOS        |
+| `src/install.rs`, `src/install/`       | `install` and `uninstall`: the background service or the scheduled task     |
 | `examples/echo-server.rs`              | A minimal MCP server used by the test suite                                 |

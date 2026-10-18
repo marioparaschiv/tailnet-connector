@@ -14,9 +14,10 @@ tokio = { version = "1.53.3", features = ["rt", "macros", "time", "sync", "proce
 tokio-tungstenite = "0.29.0"
 url = "2.5.8"
 
-# Resolves `npx` and other PATHEXT shims, which std's Command only finds as `.exe`.
 [target.'cfg(windows)'.dependencies]
+# Resolves `npx` and other PATHEXT shims, which std's Command only finds as `.exe`.
 rmcp = { version = "3.5.1", default-features = false, features = ["which-command"] }
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_System_Com", "Win32_System_TaskScheduler", "Win32_System_Variant", "Win32_System_Console", "Win32_System_Registry", "Win32_System_Ole"] }
 
 [target.'cfg(not(windows))'.dependencies]
 service-manager = "0.11.0"
