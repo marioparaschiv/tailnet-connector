@@ -21,7 +21,7 @@ pub enum Role {
 }
 
 impl Role {
-    pub fn label(self) -> &'static str {
+    fn label(self) -> &'static str {
         match self {
             Self::Connector => "tailnet-connector",
             Self::Hub => "tailnet-connector-hub",
