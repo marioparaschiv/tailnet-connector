@@ -194,6 +194,7 @@ async fn skips_unsupported_entries_and_the_hub_itself() {
         .env("TAILNET_URL", &hub_url)
         .env("TAILNET_MACHINE", MACHINE)
         .env("CLAUDE_CONFIG", &claude_config)
+        .env("PI_CODING_AGENT_DIR", no_pi_dir())
         .env("TAILNET_CHECKS", temp_path("missing-checks.json"))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -238,13 +239,18 @@ fn run_binary(envs: &[(&str, &OsStr)]) -> String {
         "TAILNET_MACHINE",
         "TAILNET_IDLE_SECONDS",
         "CLAUDE_CONFIG",
+        "PI_CODING_AGENT_DIR",
         "TAILNET_CHECKS",
         "TAILNET_CHECK_SECONDS",
     ] {
         command.env_remove(name);
     }
 
-    let output = command.envs(envs.iter().copied()).output().unwrap();
+    let output = command
+        .env("PI_CODING_AGENT_DIR", no_pi_dir())
+        .envs(envs.iter().copied())
+        .output()
+        .unwrap();
     assert!(!output.status.success());
 
     String::from_utf8(output.stderr).unwrap()

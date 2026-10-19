@@ -22,8 +22,19 @@ pub struct Config {
     pub machine: String,
     pub idle: Duration,
     pub claude_config: PathBuf,
+    /// Pi's user-level `mcp.json`.
+    pub pi_config: PathBuf,
+    /// The harness that started this process, which decides whose config an agent reads.
+    pub harness: Harness,
     pub checks: PathBuf,
     pub check_interval: Duration,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Harness {
+    ClaudeCode,
+    /// Pi sets `PI_CODING_AGENT=true` for the processes it starts.
+    Pi,
 }
 
 #[derive(Debug, Deserialize)]
@@ -35,12 +46,17 @@ pub enum ServerConfig {
         args: Vec<String>,
         #[serde(default)]
         env: BTreeMap<String, String>,
+        #[serde(default)]
+        cwd: Option<PathBuf>,
     },
     Http {
         #[serde(deserialize_with = "http_url")]
         url: Uri,
         #[serde(default, deserialize_with = "headers")]
         headers: HashMap<HeaderName, HeaderValue>,
+        /// Set on Pi entries without an `Authorization` header, which sign in through Pi.
+        #[serde(default, rename = "piOAuth")]
+        pi_oauth: bool,
     },
 }
 
@@ -148,6 +164,16 @@ impl Config {
                 var("CLAUDE_CONFIG")?,
                 &[".claude.json"],
             )?,
+            pi_config: Self::path_or_home(
+                "PI_CODING_AGENT_DIR",
+                var("PI_CODING_AGENT_DIR")?,
+                &[".pi", "agent"],
+            )?
+            .join("mcp.json"),
+            harness: match var("PI_CODING_AGENT")?.as_deref() {
+                Some("true") => Harness::Pi,
+                _ => Harness::ClaudeCode,
+            },
             checks: Self::path_or_home(
                 "TAILNET_CHECKS",
                 var("TAILNET_CHECKS")?,
@@ -249,14 +275,26 @@ pub(crate) fn var(
     }
 }
 
+/// The `mcpServers` of the Claude config, empty when the file does not exist.
 pub fn read_mcp_servers(path: &Path) -> Result<McpServers, ConfigError> {
-    #[derive(Deserialize)]
+    #[derive(Default, Deserialize)]
     struct ClaudeConfig {
         #[serde(default, rename = "mcpServers")]
         mcp_servers: McpServers,
     }
 
-    Ok(read_json::<ClaudeConfig>(path)?.mcp_servers)
+    Ok(read_json_if_exists::<ClaudeConfig>(path)?
+        .unwrap_or_default()
+        .mcp_servers)
+}
+
+pub fn read_json_if_exists<T: DeserializeOwned>(path: &Path) -> Result<Option<T>, ConfigError> {
+    match read_json(path) {
+        Err(ConfigError::Read { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => {
+            Ok(None)
+        }
+        result => result.map(Some),
+    }
 }
 
 pub fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T, ConfigError> {
@@ -349,6 +387,8 @@ mod tests {
         assert_eq!(config.idle, Duration::from_secs(300));
         assert_eq!(config.check_interval, Duration::from_secs(10));
         assert_eq!(config.claude_config, home.join(".claude.json"));
+        assert_eq!(config.pi_config, home.join(".pi/agent/mcp.json"));
+        assert_eq!(config.harness, Harness::ClaudeCode);
         assert_eq!(config.checks, home.join(".config/tailnet/checks.json"));
         assert_eq!(
             config.machine,
@@ -373,6 +413,8 @@ mod tests {
             ("TAILNET_MACHINE", "laptop"),
             ("TAILNET_IDLE_SECONDS", "5"),
             ("CLAUDE_CONFIG", "/tmp/claude.json"),
+            ("PI_CODING_AGENT_DIR", "/tmp/pi"),
+            ("PI_CODING_AGENT", "true"),
             ("TAILNET_CHECKS", "/tmp/checks.json"),
             ("TAILNET_CHECK_SECONDS", "2"),
         ])
@@ -383,6 +425,8 @@ mod tests {
         assert_eq!(config.machine, "laptop");
         assert_eq!(config.idle, Duration::from_secs(5));
         assert_eq!(config.claude_config, PathBuf::from("/tmp/claude.json"));
+        assert_eq!(config.pi_config, PathBuf::from("/tmp/pi/mcp.json"));
+        assert_eq!(config.harness, Harness::Pi);
         assert_eq!(config.checks, PathBuf::from("/tmp/checks.json"));
         assert_eq!(config.check_interval, Duration::from_secs(2));
     }
@@ -439,12 +483,12 @@ mod tests {
 
         assert!(matches!(
             parse("echo").unwrap(),
-            ServerConfig::Stdio { command, args, env }
-                if command == "echo-server" && args == ["-v"] && env["A"] == "1"
+            ServerConfig::Stdio { command, args, env, cwd }
+                if command == "echo-server" && args == ["-v"] && env["A"] == "1" && cwd.is_none()
         ));
         assert!(matches!(
             parse("remote").unwrap(),
-            ServerConfig::Http { url, headers }
+            ServerConfig::Http { url, headers, pi_oauth: false }
                 if url == "https://example.com/mcp" && headers[&HeaderName::from_static("x-key")] == "k"
         ));
 
@@ -478,8 +522,10 @@ mod tests {
     #[test]
     fn defaults_to_no_mcp_servers() {
         let path = write_temp("no-mcp-servers.json", "{}");
+        let missing = env::temp_dir().join("tailnet-connector-no-such-claude.json");
 
         assert!(read_mcp_servers(&path).unwrap().is_empty());
+        assert!(read_mcp_servers(&missing).unwrap().is_empty());
     }
 
     #[test]

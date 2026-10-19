@@ -17,6 +17,7 @@ use tokio::process::Command;
 use tokio::task::{AbortHandle, JoinError};
 
 use crate::config::{self, Config, McpServers, ServerConfig};
+use crate::pi_auth::{PiAuth, PiAuthClient};
 
 type Client = RunningService<RoleClient, ClientConfig>;
 
@@ -29,6 +30,8 @@ pub struct Services {
 pub struct Server {
     name: String,
     config: ServerConfig,
+    /// The Pi sign-in the server's requests carry.
+    auth: Option<Arc<PiAuth>>,
     tools: Vec<Tool>,
     idle: Duration,
     // Held across a start so concurrent calls share it.
@@ -95,24 +98,40 @@ impl Services {
                     {
                         None
                     }
-                    Ok(server) => Some((name, server)),
+                    Ok(server) => {
+                        let auth = match &server {
+                            ServerConfig::Http {
+                                url,
+                                pi_oauth: true,
+                                ..
+                            } => Some(Arc::new(PiAuth::new(
+                                &config.pi_config,
+                                name,
+                                &url.to_string(),
+                            ))),
+                            _ => None,
+                        };
+
+                        Some((name, server, auth))
+                    }
                 });
 
-        let listed = join_all(configs.map(|(name, server)| async move {
-            let tools = Self::list_tools(&server).await;
+        let listed = join_all(configs.map(|(name, server, auth)| async move {
+            let tools = Self::list_tools(&server, auth.as_ref()).await;
 
-            (name, server, tools)
+            (name, server, auth, tools)
         }))
         .await;
 
         let servers = listed
             .into_iter()
-            .filter_map(|(name, server, tools)| match tools {
+            .filter_map(|(name, server, auth, tools)| match tools {
                 Ok(tools) => Some((
                     name.clone(),
                     Arc::new(Server {
                         name: name.clone(),
                         config: server,
+                        auth,
                         tools,
                         idle: config.idle,
                         client: tokio::sync::Mutex::default(),
@@ -142,8 +161,11 @@ impl Services {
         join_all(self.servers.values().map(|server| server.stop())).await;
     }
 
-    async fn list_tools(config: &ServerConfig) -> Result<Vec<Tool>, ClientError> {
-        let client = connect(config).await?;
+    async fn list_tools(
+        config: &ServerConfig,
+        auth: Option<&Arc<PiAuth>>,
+    ) -> Result<Vec<Tool>, ClientError> {
+        let client = connect(config, auth).await?;
         let tools = client.list_all_tools().await;
         client.cancel().await.map_err(ClientError::Stop)?;
 
@@ -217,7 +239,10 @@ impl Server {
             return Ok(client.peer().clone());
         }
 
-        Ok(client.insert(connect(&self.config).await?).peer().clone())
+        Ok(client
+            .insert(connect(&self.config, self.auth.as_ref()).await?)
+            .peer()
+            .clone())
     }
 
     fn activity(&self) -> MutexGuard<'_, Activity> {
@@ -261,27 +286,48 @@ impl Drop for InFlight<'_> {
     }
 }
 
-async fn connect(config: &ServerConfig) -> Result<Client, ClientError> {
+async fn connect(config: &ServerConfig, auth: Option<&Arc<PiAuth>>) -> Result<Client, ClientError> {
     let info = ClientConfig::new(
         ClientCapabilities::default(),
         Implementation::new(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")),
     );
 
     let client = match config {
-        ServerConfig::Stdio { command, args, env } => {
+        ServerConfig::Stdio {
+            command,
+            args,
+            env,
+            cwd,
+        } => {
             let mut command = program(command).map_err(ClientError::Spawn)?;
             command.args(args).envs(env);
+
+            if let Some(cwd) = cwd {
+                command.current_dir(cwd);
+            }
             let transport = TokioChildProcess::new(command).map_err(ClientError::Spawn)?;
 
             info.serve(transport).await
         }
-        ServerConfig::Http { url, headers } => {
-            let transport = StreamableHttpClientTransport::from_config(
-                StreamableHttpClientTransportConfig::with_uri(url.to_string())
-                    .custom_headers(headers.clone()),
-            );
+        ServerConfig::Http { url, headers, .. } => {
+            let transport_config = StreamableHttpClientTransportConfig::with_uri(url.to_string())
+                .custom_headers(headers.clone());
 
-            info.serve(transport).await
+            match auth {
+                Some(auth) => {
+                    let client = PiAuthClient::new(Arc::clone(auth));
+
+                    info.serve(StreamableHttpClientTransport::with_client(
+                        client,
+                        transport_config,
+                    ))
+                    .await
+                }
+                None => {
+                    info.serve(StreamableHttpClientTransport::from_config(transport_config))
+                        .await
+                }
+            }
         }
     };
 
