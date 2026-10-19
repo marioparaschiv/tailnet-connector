@@ -92,7 +92,9 @@ Start Claude Code or Pi and ask the agent to call the `list_machines` tool. The 
 
 **The agent proxy entry.** The connector recognizes the `tailnet` entry from step 4 and does not share it.
 
-**Pi entries.** The connector follows Pi's rules for its entries: `type` is optional, `streamable-http` means `http`, a leading `~/` in `command`, `args` or `cwd` names the home directory, and servers with `"enabled": false` are not shared. It does not expand `${VAR}` or `!command` values, and it cannot use Pi's OAuth sign-ins, so a server that needs them fails to list its tools and is skipped.
+**Pi entries.** The connector follows Pi's rules for its entries: `type` is optional, `streamable-http` means `http`, a leading `~/` in `command`, `args` or `cwd` names the home directory, and servers with `"enabled": false` are not shared. It does not expand `${VAR}` or `!command` values.
+
+**Pi sign-ins.** An http server from Pi's `mcp.json` without an `Authorization` header uses the OAuth sign-in Pi stored in `mcp-auth.json`, so sign in once with `pi mcp login <server>` on the connector's machine. The connector refreshes an expiring or rejected token itself and saves the new one for Pi. It takes the same lock files as Pi, so the two never refresh the same token at once: whichever comes second waits and uses the new token. When a refresh fails, the connector logs it and you sign in again with `pi mcp login`. Client secrets set under `oauth` in `mcp.json` are not used.
 
 **Server lifecycle.** Each shared server starts on its first call and stops after five minutes without calls.
 
@@ -196,6 +198,7 @@ The Windows lint step requires the cross-compiler described in [Windows installa
 | `src/hub_server/`                      | The hub: `/connect` for connectors, `/mcp` for agents, and the tool catalog |
 | `src/agent.rs`, `src/known_servers.rs` | The agent proxy and duplicate filtering                                     |
 | `src/pi_config.rs`                     | Reading Pi's `mcp.json` files                                               |
+| `src/pi_auth.rs`, `src/pi_auth/`       | Pi's OAuth sign-ins: tokens, refreshes and Pi's lock files                  |
 | `src/checks.rs`                        | Availability checks                                                         |
 | `src/install.rs`, `src/install/`       | `install` and `uninstall`: the background service or the scheduled task     |
 | `examples/echo-server.rs`              | A minimal MCP server used by the test suite                                 |

@@ -47,6 +47,7 @@ pub fn merge(user: McpServers, project: McpServers) -> McpServers {
 
 /// Rewrites Pi's entries into the shape of Claude Code's: `type` is optional in Pi, which also
 /// accepts `streamable-http` for `http` and expands a leading `~/` in a stdio server's paths.
+/// An http entry without an `Authorization` header is marked to use Pi's OAuth sign-in.
 pub fn as_claude_entries(servers: McpServers) -> McpServers {
     servers
         .into_iter()
@@ -63,6 +64,12 @@ pub fn as_claude_entries(servers: McpServers) -> McpServers {
                     fields.insert("type".to_owned(), kind.into());
                 }
 
+                if fields.get("type").and_then(Value::as_str) == Some("http")
+                    && !has_authorization(fields)
+                {
+                    fields.insert("piOAuth".to_owned(), true.into());
+                }
+
                 for key in ["command", "args", "cwd"] {
                     if let Some(value) = fields.get_mut(key) {
                         expand_home(value);
@@ -73,6 +80,17 @@ pub fn as_claude_entries(servers: McpServers) -> McpServers {
             (name, entry)
         })
         .collect()
+}
+
+fn has_authorization(entry: &serde_json::Map<String, Value>) -> bool {
+    entry
+        .get("headers")
+        .and_then(Value::as_object)
+        .is_some_and(|headers| {
+            headers
+                .keys()
+                .any(|name| name.eq_ignore_ascii_case("authorization"))
+        })
 }
 
 fn defines_server(entry: &serde_json::Map<String, Value>) -> bool {
@@ -138,6 +156,7 @@ mod tests {
         let entries = as_claude_entries(servers(json!({
             "stdio": { "command": "~/bin/mcp", "args": ["~/data", "-v"], "cwd": "~/work", "exposure": "direct" },
             "http": { "url": "https://example.com/mcp", "description": "Docs" },
+            "bearer": { "url": "https://example.com/mcp", "headers": { "authorization": "Bearer k" } },
             "streamable": { "type": "streamable-http", "url": "https://example.com/mcp" },
             "sse": { "type": "sse", "url": "https://example.com/sse" },
         })));
@@ -150,7 +169,17 @@ mod tests {
                     && args == [home.join("data").to_str().unwrap(), "-v"]
                     && cwd == Some(home.join("work"))
         ));
-        assert!(matches!(parse("http").unwrap(), ServerConfig::Http { .. }));
+        assert!(matches!(
+            parse("http").unwrap(),
+            ServerConfig::Http { pi_oauth: true, .. }
+        ));
+        assert!(matches!(
+            parse("bearer").unwrap(),
+            ServerConfig::Http {
+                pi_oauth: false,
+                ..
+            }
+        ));
         assert!(matches!(
             parse("streamable").unwrap(),
             ServerConfig::Http { .. }

@@ -8,6 +8,7 @@ pub mod install;
 pub mod known_servers;
 #[cfg(windows)]
 pub mod log_file;
+pub mod pi_auth;
 pub mod pi_config;
 pub mod reload;
 pub mod services;

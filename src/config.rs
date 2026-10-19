@@ -54,6 +54,9 @@ pub enum ServerConfig {
         url: Uri,
         #[serde(default, deserialize_with = "headers")]
         headers: HashMap<HeaderName, HeaderValue>,
+        /// Set on Pi entries without an `Authorization` header, which sign in through Pi.
+        #[serde(default, rename = "piOAuth")]
+        pi_oauth: bool,
     },
 }
 
@@ -485,7 +488,7 @@ mod tests {
         ));
         assert!(matches!(
             parse("remote").unwrap(),
-            ServerConfig::Http { url, headers }
+            ServerConfig::Http { url, headers, pi_oauth: false }
                 if url == "https://example.com/mcp" && headers[&HeaderName::from_static("x-key")] == "k"
         ));
 
