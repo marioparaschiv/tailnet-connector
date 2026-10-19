@@ -172,3 +172,83 @@ async fn tells_the_hub_which_servers_the_agent_has_and_updates_it() {
         ])
     );
 }
+
+#[tokio::test(start_paused = true)]
+async fn reads_pi_config_when_started_by_pi() {
+    let hub = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let project = project_dir("agent-pi-project");
+    let pi_dir = project_dir("agent-pi-agent-dir");
+    write_json(
+        &pi_dir.join("mcp.json"),
+        &json!({
+            "mcpServers": {
+                "tailnet": { "command": "/usr/local/bin/tailnet-connector", "args": ["agent"] },
+                "linear": { "url": "https://mcp.linear.app/mcp" },
+                "aside": { "command": "aside", "args": ["mcp"] },
+                "off": { "command": "off", "enabled": false },
+            },
+        }),
+    );
+    let project_file = project.join(".pi").join("mcp.json");
+    std::fs::create_dir_all(project_file.parent().unwrap()).unwrap();
+    let write_project = |mcp_servers: Value, generation: u64| {
+        write_json(&project_file, &json!({ "mcpServers": mcp_servers }));
+        std::fs::File::options()
+            .write(true)
+            .open(&project_file)
+            .unwrap()
+            .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(generation))
+            .unwrap();
+    };
+    write_project(
+        json!({
+            "linear": { "url": "https://linear.example.com/mcp" },
+            "aside": { "enabled": false },
+            "chrome-devtools": { "command": "npx", "args": ["chrome-devtools-mcp"] },
+        }),
+        1,
+    );
+    let config = config(
+        &hub,
+        &temp_path("agent-pi-no-claude.json"),
+        &[
+            ("PI_CODING_AGENT", "true"),
+            ("PI_CODING_AGENT_DIR", pi_dir.to_str().unwrap()),
+        ],
+    );
+    serve_fake_hub(hub).await;
+
+    let (agent_side, client_side) = tokio::io::duplex(64 * 1024);
+    let agent_project = project.clone();
+    tokio::spawn(async move {
+        let (reader, writer) = tokio::io::split(agent_side);
+        agent::run(&config, &agent_project, reader, writer)
+            .await
+            .unwrap();
+    });
+    let (tool_list_changed, mut tool_list_changes) = mpsc::unbounded_channel();
+    let agent = Agent(tool_list_changed)
+        .serve(tokio::io::split(client_side))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        known_servers(&agent).await,
+        json!([
+            { "name": "chrome-devtools" },
+            { "name": "linear", "url": "https://linear.example.com/mcp" },
+        ])
+    );
+
+    write_project(json!({ "off": { "enabled": true } }), 2);
+    tool_list_changes.recv().await.unwrap();
+
+    assert_eq!(
+        known_servers(&agent).await,
+        json!([
+            { "name": "aside" },
+            { "name": "linear", "url": "https://mcp.linear.app/mcp" },
+            { "name": "off" },
+        ])
+    );
+}

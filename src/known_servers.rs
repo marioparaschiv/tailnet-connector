@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio_tungstenite::tungstenite::http::{HeaderName, Uri};
 
-use crate::config::{self, Config, ConfigError, McpServers};
-use crate::reload;
+use crate::config::{self, Config, ConfigError, Harness, McpServers};
+use crate::{pi_config, reload};
 
 /// Carries an agent's known servers to the hub as a JSON array.
 pub const KNOWN_SERVERS_HEADER: HeaderName = HeaderName::from_static("x-tailnet-known-servers");
@@ -21,9 +21,11 @@ pub struct KnownServer {
     pub url: Option<String>,
 }
 
-/// Tracks the MCP servers Claude Code gives an agent working in `project`.
+/// Tracks the MCP servers the harness gives an agent working in `project`.
 pub struct KnownServers {
-    claude_config: PathBuf,
+    harness: Harness,
+    /// The harness's user config: the Claude config, or Pi's `mcp.json`.
+    user_file: PathBuf,
     project_file: PathBuf,
     project: String,
     hub_host: String,
@@ -53,9 +55,17 @@ struct Entry {
 
 impl KnownServers {
     pub fn read(config: &Config, project: &Path) -> Result<Self, ConfigError> {
+        let (user_file, project_file) = match config.harness {
+            Harness::ClaudeCode => (config.claude_config.clone(), project.join(".mcp.json")),
+            Harness::Pi => (
+                config.pi_config.clone(),
+                project.join(".pi").join("mcp.json"),
+            ),
+        };
         let mut known = Self {
-            claude_config: config.claude_config.clone(),
-            project_file: project.join(".mcp.json"),
+            harness: config.harness,
+            user_file,
+            project_file,
             project: project.to_string_lossy().into_owned(),
             hub_host: config.hub_host.clone(),
             modified: [None, None],
@@ -93,13 +103,28 @@ impl KnownServers {
 
     fn modified(&self) -> [Option<SystemTime>; 2] {
         [
-            reload::modified(&self.claude_config),
+            reload::modified(&self.user_file),
             reload::modified(&self.project_file),
         ]
     }
 
     fn load(&self) -> Result<Vec<KnownServer>, ConfigError> {
-        let mut claude_config = config::read_json::<ClaudeConfig>(&self.claude_config)?;
+        let servers = match self.harness {
+            Harness::ClaudeCode => self.claude_code_servers()?,
+            Harness::Pi => pi_config::merge(
+                pi_config::read(&self.user_file)?,
+                pi_config::read(&self.project_file)?,
+            ),
+        };
+
+        Ok(servers
+            .into_iter()
+            .filter_map(|(name, entry)| self.known_server(name, entry))
+            .collect())
+    }
+
+    fn claude_code_servers(&self) -> Result<McpServers, ConfigError> {
+        let mut claude_config = config::read_json::<ClaudeConfig>(&self.user_file)?;
         let shared = if self.project_file.exists() {
             config::read_json::<Scope>(&self.project_file)?.mcp_servers
         } else {
@@ -112,15 +137,11 @@ impl KnownServers {
             .unwrap_or_default();
 
         // Claude Code's precedence: a local entry replaces a project one, which replaces a user one.
-        let mut servers = BTreeMap::new();
-        servers.extend(claude_config.mcp_servers);
+        let mut servers = claude_config.mcp_servers;
         servers.extend(shared);
         servers.extend(local);
 
-        Ok(servers
-            .into_iter()
-            .filter_map(|(name, entry)| self.known_server(name, entry))
-            .collect())
+        Ok(servers)
     }
 
     fn known_server(&self, name: String, entry: Value) -> Option<KnownServer> {

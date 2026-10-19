@@ -1,6 +1,6 @@
 # Tailnet Connector
 
-Tailnet Connector makes the MCP servers configured on each of your machines available to Claude Code agents on any other machine in your Tailscale network.
+Tailnet Connector makes the MCP servers configured on each of your machines available to Claude Code and Pi agents on any other machine in your Tailscale network.
 
 For example, if a laptop runs a browser automation server and a desktop runs a database server, an agent on either machine, or on a third one, can call the tools of both.
 
@@ -9,8 +9,8 @@ For example, if a laptop runs a browser automation server and a desktop runs a d
 A single binary provides three roles, selected by the command used to start it.
 
 1. **Hub.** Runs on one machine. It aggregates the tools registered by every connector and serves them to agents.
-2. **Connector.** Runs on each machine that shares MCP servers. It reads the servers defined in `~/.claude.json` and registers their tools with the hub.
-3. **Agent proxy.** Runs inside Claude Code as a stdio MCP server and connects the agent to the hub.
+2. **Connector.** Runs on each machine that shares MCP servers. It reads the servers defined in `~/.claude.json` and Pi's `~/.pi/agent/mcp.json` and registers their tools with the hub.
+3. **Agent proxy.** Runs inside Claude Code or Pi as a stdio MCP server and connects the agent to the hub.
 
 Agents see each remote tool under the name `<machine>__<service>__<tool>`, such as `laptop__browser__screenshot`.
 
@@ -20,7 +20,7 @@ All traffic travels over Tailscale. The hub listens only on its Tailscale addres
 
 - Tailscale, installed and signed in on every participating machine
 - Rust, installed through `rustup`, which fetches the pinned toolchain on the first build
-- Claude Code, on each machine that runs agents
+- Claude Code or Pi, on each machine that runs agents
 
 ## Setup
 
@@ -59,7 +59,7 @@ Run a connector on every machine whose MCP servers you want to share. This inclu
 TAILNET_URL=http://100.x.y.z:8790 tailnet-connector
 ```
 
-The connector shares every server listed under `mcpServers` in `~/.claude.json` and applies later changes to that file without a restart.
+The connector shares every server listed under `mcpServers` in `~/.claude.json` and in Pi's `~/.pi/agent/mcp.json`, and applies later changes to either file without a restart. A missing file counts as no servers. When both files define a server with the same name, the Pi entry is shared.
 
 ### 4. Connect your agent
 
@@ -74,15 +74,25 @@ On the machine where the agent runs, add the following entry to `mcpServers` in 
 }
 ```
 
+For Pi, add the same entry to `mcpServers` in `~/.pi/agent/mcp.json`, or run:
+
+```sh
+pi mcp add tailnet --env TAILNET_URL=http://100.x.y.z:8790 -- tailnet-connector agent
+```
+
+The agent proxy detects Pi through the `PI_CODING_AGENT` variable that Pi sets, and then reads Pi's config instead of Claude Code's to find the servers the agent already has.
+
 ### 5. Verify the setup
 
-Start Claude Code and ask the agent to call the `list_machines` tool. The result lists each machine on the network along with the services it shares.
+Start Claude Code or Pi and ask the agent to call the `list_machines` tool. The result lists each machine on the network along with the services it shares.
 
 ## Behavior
 
 **Duplicate tools.** When an agent already has a server configured locally, the hub omits its own copy of that server from the agent's tool list.
 
 **The agent proxy entry.** The connector recognizes the `tailnet` entry from step 4 and does not share it.
+
+**Pi entries.** The connector follows Pi's rules for its entries: `type` is optional, `streamable-http` means `http`, a leading `~/` in `command`, `args` or `cwd` names the home directory, and servers with `"enabled": false` are not shared. It does not expand `${VAR}` or `!command` values, and it cannot use Pi's OAuth sign-ins, so a server that needs them fails to list its tools and is skipped.
 
 **Server lifecycle.** Each shared server starts on its first call and stops after five minutes without calls.
 
@@ -152,7 +162,8 @@ All configuration is read from environment variables. `TAILNET_URL` is the only 
 | `TAILNET_URL`           | None                                                 | The hub URL. Only `http://` and `ws://` are accepted, because TLS is not supported. |
 | `TAILNET_MACHINE`       | The hostname in lowercase, without a `.local` suffix | The machine name used in tool names.                                                |
 | `TAILNET_IDLE_SECONDS`  | `300`                                                | Seconds without calls before a server is stopped.                                   |
-| `CLAUDE_CONFIG`         | `~/.claude.json`                                     | The file from which `mcpServers` is read.                                           |
+| `CLAUDE_CONFIG`         | `~/.claude.json`                                     | The Claude Code file from which `mcpServers` is read.                               |
+| `PI_CODING_AGENT_DIR`   | `~/.pi/agent`                                        | Pi's agent directory, whose `mcp.json` is read.                                     |
 | `TAILNET_CHECKS`        | `~/.config/tailnet/checks.json`                      | The file from which availability checks are read.                                   |
 | `TAILNET_CHECK_SECONDS` | `10`                                                 | The interval between availability checks.                                           |
 | `TAILNET_LOG`           | None                                                 | Windows only. The log file path, since the executable has no console.               |
@@ -184,6 +195,7 @@ The Windows lint step requires the cross-compiler described in [Windows installa
 | `src/connector.rs`, `src/services.rs`  | The connector: registration and server lifecycle                            |
 | `src/hub_server/`                      | The hub: `/connect` for connectors, `/mcp` for agents, and the tool catalog |
 | `src/agent.rs`, `src/known_servers.rs` | The agent proxy and duplicate filtering                                     |
+| `src/pi_config.rs`                     | Reading Pi's `mcp.json` files                                               |
 | `src/checks.rs`                        | Availability checks                                                         |
 | `src/install.rs`, `src/install/`       | `install` and `uninstall`: the background service or the scheduled task     |
 | `examples/echo-server.rs`              | A minimal MCP server used by the test suite                                 |

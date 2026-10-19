@@ -61,6 +61,11 @@ pub fn claude_config(name: &str, mcp_servers: Value) -> PathBuf {
     path
 }
 
+/// A Pi agent directory without an `mcp.json`, so tests don't read the real one.
+pub fn no_pi_dir() -> PathBuf {
+    temp_path("no-pi-agent-dir")
+}
+
 /// Config pointing at `hub`, with no checks file and no idle stop unless `vars` sets them.
 ///
 /// Paused time jumps to the next timer whenever the runtime waits on a real process or socket,
@@ -74,6 +79,7 @@ pub fn config(hub: &TcpListener, claude_config: &Path, vars: &[(&str, &str)]) ->
         ),
         ("TAILNET_MACHINE", MACHINE.to_owned()),
         ("CLAUDE_CONFIG", claude_config.display().to_string()),
+        ("PI_CODING_AGENT_DIR", no_pi_dir().display().to_string()),
         (
             "TAILNET_CHECKS",
             temp_path("missing-checks.json").display().to_string(),

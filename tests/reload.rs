@@ -105,3 +105,52 @@ async fn registers_reloaded_servers_while_the_checks_file_is_malformed() {
     assert_eq!(registered_names(&receive(&mut socket).await), ["echo"]);
     assert_ne!(echo(&mut socket, 2, "echo").await, first);
 }
+
+#[tokio::test(start_paused = true)]
+async fn shares_pi_servers_alongside_claude_ones() {
+    let claude = claude_config(
+        "reload-pi-claude.json",
+        json!({ "echo": echo_entry(), "both": { "type": "stdio", "command": "missing-mcp" } }),
+    );
+    let pi_dir = temp_path("reload-pi-agent-dir");
+    std::fs::create_dir_all(&pi_dir).unwrap();
+    let pi_config = pi_dir.join("mcp.json");
+    let echo_path = echo_server_path().display().to_string();
+    let pi_json = |servers: serde_json::Value| json!({ "mcpServers": servers }).to_string();
+    rewrite(
+        &pi_config,
+        &pi_json(json!({
+            "pi-echo": { "command": echo_path },
+            "both": { "command": echo_path },
+            "off": { "command": echo_path, "enabled": false },
+        })),
+        1,
+    );
+    let hub = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let pi_dir_var = pi_dir.display().to_string();
+    start_connector(config(
+        &hub,
+        &claude,
+        &[("PI_CODING_AGENT_DIR", &pi_dir_var)],
+    ))
+    .await;
+    let mut socket = accept(&hub).await;
+
+    // Pi's `both` replaced Claude's, whose command does not exist.
+    assert_eq!(
+        registered_names(&receive(&mut socket).await),
+        ["both", "echo", "pi-echo"]
+    );
+    echo(&mut socket, 1, "pi-echo").await;
+
+    rewrite(
+        &pi_config,
+        &pi_json(json!({ "pi-echo": { "command": echo_path }, "off": { "command": echo_path } })),
+        2,
+    );
+
+    assert_eq!(
+        registered_names(&receive(&mut socket).await),
+        ["echo", "off", "pi-echo"]
+    );
+}

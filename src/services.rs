@@ -268,9 +268,18 @@ async fn connect(config: &ServerConfig) -> Result<Client, ClientError> {
     );
 
     let client = match config {
-        ServerConfig::Stdio { command, args, env } => {
+        ServerConfig::Stdio {
+            command,
+            args,
+            env,
+            cwd,
+        } => {
             let mut command = program(command).map_err(ClientError::Spawn)?;
             command.args(args).envs(env);
+
+            if let Some(cwd) = cwd {
+                command.current_dir(cwd);
+            }
             let transport = TokioChildProcess::new(command).map_err(ClientError::Spawn)?;
 
             info.serve(transport).await

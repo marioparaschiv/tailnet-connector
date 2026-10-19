@@ -22,7 +22,7 @@ impl Connector {
     /// Lists the configured services and checks which are available, failing on unreadable
     /// config or checks files.
     pub async fn start(config: Config) -> Result<Self, ConfigError> {
-        let watcher = Watcher::new(config.claude_config.clone())?;
+        let watcher = Watcher::new(config.claude_config.clone(), config.pi_config.clone())?;
         let services = Services::start(watcher.mcp_servers(), &config).await;
         let connector = Self {
             config,
@@ -37,7 +37,7 @@ impl Connector {
         Ok(connector)
     }
 
-    /// Serves the hub forever while rechecking availability and watching the Claude config.
+    /// Serves the hub forever while rechecking availability and watching the MCP configs.
     pub async fn run(mut self) -> Infallible {
         let config = self.config.clone();
 
@@ -65,7 +65,7 @@ impl Connector {
                 }
                 _ = reload.tick() => {
                     if let Err(error) = self.reload_if_changed().await {
-                        eprintln!("cannot reload {}: {error}", self.watcher.path().display());
+                        eprintln!("cannot reload the MCP config: {error}");
                     }
                 }
             }

@@ -152,7 +152,7 @@ fn report(result: Result<install::Outcome, install::InstallError>) -> ExitCode {
 }
 
 async fn run_agent(config: &Config) -> ExitCode {
-    // Claude Code starts an agent's stdio servers in the agent's project directory.
+    // Claude Code and Pi start an agent's stdio servers in the agent's project directory.
     let project = match std::env::current_dir() {
         Ok(project) => project,
         Err(error) => {
