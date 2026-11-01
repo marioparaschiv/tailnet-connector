@@ -1,11 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::ErrorKind;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use futures_util::future::join_all;
 use serde::Deserialize;
-use tokio::net::TcpStream;
 
 use crate::config::{self, ConfigError};
 
@@ -77,9 +77,7 @@ pub async fn available<'a>(
 async fn passes(check: &Check) -> bool {
     let connect = async {
         match check {
-            Check::Tcp(TcpAddress { host, port }) => {
-                TcpStream::connect((host.as_str(), *port)).await.is_ok()
-            }
+            Check::Tcp(address) => connect_tcp(address).await,
             Check::UnixSocket(path) => connect_unix(&expand_home(path)).await,
         }
     };
@@ -87,6 +85,24 @@ async fn passes(check: &Check) -> bool {
     tokio::time::timeout(TIMEOUT, connect)
         .await
         .unwrap_or(false)
+}
+
+// Blocking, because a paused test clock skips past an async connect's timeout before the connect
+// is seen to finish, but never past a running blocking task.
+async fn connect_tcp(TcpAddress { host, port }: &TcpAddress) -> bool {
+    let address = (host.clone(), *port);
+
+    tokio::task::spawn_blocking(move || {
+        let Ok(addresses) = address.to_socket_addrs() else {
+            return false;
+        };
+
+        addresses
+            .into_iter()
+            .any(|address| TcpStream::connect_timeout(&address, TIMEOUT).is_ok())
+    })
+    .await
+    .expect("the TCP check does not panic")
 }
 
 #[cfg(unix)]
