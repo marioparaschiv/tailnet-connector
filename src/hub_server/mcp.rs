@@ -30,6 +30,10 @@ const LIST_MACHINES: &str = "list_machines";
 pub(super) fn service(state: &HubState) -> StreamableHttpService<Session, LocalSessionManager> {
     let state = state.clone();
     let catalogs = Catalogs::new(&state.hosts);
+    let mut sessions = LocalSessionManager::default();
+    // An agent can sit idle for hours and must still hear about tool changes, so a session only
+    // ends when the agent closes it.
+    sessions.session_config.keep_alive = None;
 
     StreamableHttpService::new(
         move || {
@@ -39,7 +43,7 @@ pub(super) fn service(state: &HubState) -> StreamableHttpService<Session, LocalS
                 known: OnceLock::new(),
             })
         },
-        Arc::default(),
+        Arc::new(sessions),
         // Agents reach the hub by its Tailscale address or name, which the default list of
         // loopback hosts would turn away.
         StreamableHttpServerConfig::default().disable_allowed_hosts(),
