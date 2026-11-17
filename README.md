@@ -8,9 +8,9 @@ Share the MCP servers on each of your machines with Claude Code and Pi agents on
 
 <br />
 
-[![Stars](https://img.shields.io/github/stars/marioparaschiv/tailnet-connector?style=for-the-badge&labelColor=0c0c0c&color=c03f4e)](https://github.com/marioparaschiv/tailnet-connector/stargazers)
-[![Release](https://img.shields.io/github/v/release/marioparaschiv/tailnet-connector?style=for-the-badge&labelColor=0c0c0c&color=c03f4e)](https://github.com/marioparaschiv/tailnet-connector/releases)
-[![CI](https://img.shields.io/github/actions/workflow/status/marioparaschiv/tailnet-connector/ci.yml?branch=main&style=for-the-badge&label=ci&labelColor=0c0c0c&color=c03f4e)](https://github.com/marioparaschiv/tailnet-connector/actions/workflows/ci.yml)
+[![Stars](https://img.shields.io/github/stars/marioparaschiv/tailnet-connector?style=for-the-badge&labelColor=0c0c0c&color=89cff0)](https://github.com/marioparaschiv/tailnet-connector/stargazers)
+[![Release](https://img.shields.io/github/v/release/marioparaschiv/tailnet-connector?style=for-the-badge&labelColor=0c0c0c&color=89cff0)](https://github.com/marioparaschiv/tailnet-connector/releases)
+[![CI](https://img.shields.io/github/actions/workflow/status/marioparaschiv/tailnet-connector/ci.yml?branch=main&style=for-the-badge&label=ci&labelColor=0c0c0c&color=89cff0)](https://github.com/marioparaschiv/tailnet-connector/actions/workflows/ci.yml)
 
 **[Setup](#setup)** · [Configuration](#configuration) · [Architecture](#architecture)
 
@@ -250,12 +250,12 @@ flowchart LR
     Proxy <-->|"MCP over HTTP<br/>Tailscale"| Hub
     Connector <-->|"WebSocket<br/>Tailscale"| Hub
 
-    classDef core fill:#c74050,stroke:#c74050,color:#ffffff
+    classDef core fill:#89cff0,stroke:#89cff0,color:#0c0c0c
     classDef local fill:#2b2b2b,stroke:#6b6b6b,color:#ffffff
     class Hub,Proxy,Connector core
     class Agent,Servers local
     style AgentMachine fill:transparent,stroke:#6b6b6b,stroke-width:2px
-    style HubMachine fill:transparent,stroke:#c74050,stroke-width:2px
+    style HubMachine fill:transparent,stroke:#89cff0,stroke-width:2px
     style SharingMachine fill:transparent,stroke:#6b6b6b,stroke-width:2px
 ```
 
