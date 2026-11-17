@@ -7,17 +7,22 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
 use tokio::sync::watch;
 use tokio::task::JoinSet;
+use tokio::time::{Instant, interval_at};
 use tokio_tungstenite::tungstenite::{Error as WsError, Message};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 
 use crate::config::Config;
 use crate::hub::protocol::{ConnectorMessage, HubMessage, RegisteredService};
+use crate::hub::wake::Wake;
 use crate::services::{Server, Services};
 
 pub mod protocol;
+mod wake;
 
 const FIRST_RETRY: Duration = Duration::from_secs(1);
 const MAX_RETRY: Duration = Duration::from_secs(60);
+/// How often an idle connector pings the hub.
+pub const HEARTBEAT: Duration = Duration::from_secs(30);
 
 /// What the hub should see: the listed services and which of them are available right now.
 pub struct Registration {
@@ -51,25 +56,50 @@ impl Registration {
     }
 }
 
-/// Keeps a registered connection to the hub open forever, reconnecting with exponential backoff.
+/// Keeps a registered connection to the hub open forever, reconnecting with exponential backoff,
+/// and at once when the machine wakes from sleep.
 pub async fn run(config: &Config, mut registration: watch::Receiver<Registration>) -> Infallible {
     let mut retry = FIRST_RETRY;
+    let mut wake = Wake::new();
 
     loop {
-        match connect_async(&config.connect_url).await {
-            Ok((socket, _)) => {
+        // The hub has likely dropped a connection that slept, and the socket here would not
+        // find out until a write fails.
+        tokio::select! {
+            connected = attempt(config, &mut registration) => if connected {
                 retry = FIRST_RETRY;
-
-                if let Err(error) = serve(config, &mut registration, socket).await {
-                    eprintln!("connection to {} failed: {error}", config.url);
-                }
+            },
+            () = wake.woke() => {
+                println!("woke from sleep, reconnecting to {}", config.url);
+                retry = FIRST_RETRY;
+                continue;
             }
-            Err(error) => eprintln!("cannot connect to {}: {error}", config.connect_url),
         }
 
         eprintln!("supervisor unreachable, retrying in {}s", retry.as_secs());
-        tokio::time::sleep(retry).await;
-        retry = (retry * 2).min(MAX_RETRY);
+        // The backoff's clock stands still during sleep too, so waking ends it.
+        tokio::select! {
+            () = tokio::time::sleep(retry) => retry = (retry * 2).min(MAX_RETRY),
+            () = wake.woke() => retry = FIRST_RETRY,
+        }
+    }
+}
+
+/// Connects and serves the hub until the connection ends, returning whether it connected.
+async fn attempt(config: &Config, registration: &mut watch::Receiver<Registration>) -> bool {
+    match connect_async(&config.connect_url).await {
+        Ok((socket, _)) => {
+            if let Err(error) = serve(config, registration, socket).await {
+                eprintln!("connection to {} failed: {error}", config.url);
+            }
+
+            true
+        }
+        Err(error) => {
+            eprintln!("cannot connect to {}: {error}", config.connect_url);
+
+            false
+        }
     }
 }
 
@@ -92,6 +122,10 @@ async fn serve(
 
     // Calls run as separate tasks so a slow tool never holds up the others.
     let mut calls = JoinSet::new();
+    // A machine waking from sleep finds this socket open although the hub dropped it meanwhile,
+    // and would wait on it forever. Writing a ping draws a reset from the hub's side instead,
+    // which ends the connection so it is reopened and registered again.
+    let mut heartbeat = interval_at(Instant::now() + HEARTBEAT, HEARTBEAT);
 
     loop {
         tokio::select! {
@@ -120,6 +154,7 @@ async fn serve(
                 Ok(reply) => sink.send(reply).await?,
                 Err(error) => eprintln!("call failed: {error}"),
             },
+            _ = heartbeat.tick() => sink.send(Message::Ping(Default::default())).await?,
         }
     }
 }

@@ -6,7 +6,9 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use common::*;
+use futures_util::StreamExt;
 use serde_json::json;
+use tailnet_connector::hub::HEARTBEAT;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::net::TcpListener;
 use tokio::time::Instant;
@@ -109,6 +111,22 @@ async fn reconnects_with_backoff_and_registers_again() {
 
     let mut socket = accept_async(wait_for_attempt(1).await).await.unwrap();
     assert_eq!(receive(&mut socket).await["machine"], MACHINE);
+}
+
+#[tokio::test(start_paused = true)]
+async fn pings_the_hub_while_idle() {
+    let claude_config = claude_config("pings.json", json!({}));
+    let hub = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    start_connector(config(&hub, &claude_config, &[])).await;
+
+    let mut socket = accept(&hub).await;
+    assert_eq!(receive(&mut socket).await["type"], "register");
+    let start = Instant::now();
+
+    // Paused time races ahead while the runtime waits on the socket, so only the order holds.
+    let message = socket.next().await.unwrap().unwrap();
+    assert!(message.is_ping(), "{message:?}");
+    assert!(start.elapsed() >= HEARTBEAT, "{:?}", start.elapsed());
 }
 
 #[tokio::test]
